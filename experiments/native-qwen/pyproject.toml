@@ -1,0 +1,15 @@
+[project]
+name = "livecaptions-native-qwen-evaluation"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "livecaptions-asr",
+    "numpy>=2",
+    "onnxruntime>=1.31.1",
+    "psutil>=7.2.2",
+    "pyarrow>=26.0.0",
+    "rapidfuzz>=3.14.6",
+]
+
+[tool.uv.sources]
+livecaptions-asr = { path = "../..", editable = true }

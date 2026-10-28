@@ -1,0 +1,23 @@
+<Window x:Class="LiveCaptions.Desktop.Views.CaptionWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+ xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:views="using:LiveCaptions.Desktop.Views"
+ Title="言川 · 实时字幕">
+ <Grid x:Name="Root" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}" Padding="20,0,20,16" RowSpacing="10">
+  <Grid.RowDefinitions><RowDefinition Height="40"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <Grid x:Name="HeaderChrome"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid x:Name="DragRegion" Background="Transparent"><TextBlock Text="言川" VerticalAlignment="Center" FontWeight="SemiBold" Opacity="0.7"/></Grid><Button Grid.Column="1" Click="CloseCaption" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="关闭字幕" AutomationProperties.Name="关闭字幕"><FontIcon Glyph="&#xE711;" FontSize="16"/></Button></Grid>
+  <Grid Grid.Row="1" x:Name="CaptureControls" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+   <ComboBox x:Name="SourcePicker" SelectedIndex="0" HorizontalAlignment="Stretch"><ComboBoxItem Content="系统声音" Tag="system"/><ComboBoxItem Content="麦克风" Tag="microphone"/><ComboBoxItem Content="系统 + 麦克风" Tag="both"/></ComboBox>
+   <ComboBox Grid.Column="1" x:Name="LanguagePicker" SelectedIndex="0" HorizontalAlignment="Stretch"><ComboBoxItem Content="自动语言" Tag="auto"/><ComboBoxItem Content="中文" Tag="zh"/><ComboBoxItem Content="日本語" Tag="ja"/><ComboBoxItem Content="English" Tag="en"/></ComboBox>
+   <Button Grid.Column="2" x:Name="StartButton" Style="{StaticResource AccentButtonStyle}" Click="ToggleCapture" Width="40" Height="36" Padding="8" CornerRadius="10" ToolTipService.ToolTip="开始字幕" AutomationProperties.Name="开始字幕"><FontIcon x:Name="StartIcon" Glyph="&#xE768;" FontSize="18"/></Button>
+  </Grid>
+  <Grid Grid.Row="2" x:Name="SubtitleArea" SizeChanged="WidthChanged">
+   <StackPanel x:Name="Compact" VerticalAlignment="Center" Spacing="8"><views:OutlinedText x:Name="Line1"/><views:OutlinedText x:Name="Line2" Text="字幕将在这里显示"/></StackPanel>
+   <ListView x:Name="History" Visibility="Collapsed" SelectionMode="None" HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled">
+    <ListView.ItemsPanel><ItemsPanelTemplate><ItemsStackPanel VerticalAlignment="Bottom"/></ItemsPanelTemplate></ListView.ItemsPanel>
+    <ListView.ItemTemplate><DataTemplate><Grid ColumnSpacing="12" Padding="0,6"><Grid.ColumnDefinitions><ColumnDefinition Width="76"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><TextBlock Text="{Binding Time}" FontSize="11" Opacity="0.45" VerticalAlignment="Top"/><StackPanel Grid.Column="1" Spacing="6"><TextBlock Text="{Binding Text}" FontSize="24" TextWrapping="Wrap" IsTextSelectionEnabled="True"/><TextBlock Text="{Binding Translation}" FontSize="22" TextWrapping="Wrap" IsTextSelectionEnabled="True" Opacity="0.85"/></StackPanel></Grid></DataTemplate></ListView.ItemTemplate>
+   </ListView>
+  </Grid>
+  <Grid Grid.Row="3" x:Name="Footer" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="Status" Text="就绪" FontSize="11" Opacity="0.6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button Grid.Column="1" Click="TranslationSettings" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="翻译设置" AutomationProperties.Name="翻译设置"><FontIcon Glyph="&#xF2B7;" FontSize="19"/></Button><Button Grid.Column="2" x:Name="HistoryButton" Click="ToggleHistory" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="展开历史" AutomationProperties.Name="展开历史"><FontIcon x:Name="HistoryIcon" Glyph="&#xE81C;" FontSize="19"/></Button><Thumb Grid.Column="3" Width="18" Height="24" VerticalAlignment="Bottom" DragDelta="ResizeGrip"><Thumb.Template><ControlTemplate TargetType="Thumb"><TextBlock Text="◢" VerticalAlignment="Bottom" Opacity="0.45"/></ControlTemplate></Thumb.Template></Thumb></Grid>
+ </Grid>
+</Window>

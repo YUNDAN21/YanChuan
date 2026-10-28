@@ -1,0 +1,30 @@
+[project]
+name = "livecaptions-testapp"
+version = "0.1.0"
+description = "Integration harness for the LiveCaptions ASR library, not the product"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "livecaptions-asr[endpoint]",
+    "fastapi>=0.159.1",
+    "pydantic-settings>=2.16.1",
+    "python-multipart>=0.0.32",
+    "uvicorn[standard]>=0.54.0",
+    "livecaptions-audio",
+]
+
+[project.scripts]
+livecaptions-testapp = "livecaptions_testapp.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.12.16,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+livecaptions-asr = { path = "../..", editable = true }
+livecaptions-audio = { path = "../../packages/audio-capture", editable = true }
+
+[dependency-groups]
+dev = ["httpx>=0.28.1", "pytest>=9.1.1", "ruff>=0.17.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

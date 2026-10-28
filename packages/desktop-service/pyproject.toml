@@ -1,0 +1,22 @@
+[project]
+name = "livecaptions-service"
+version = "0.1.0"
+description = "Headless desktop orchestration API for recognition and meetings"
+requires-python = ">=3.12,<3.13"
+dependencies = ["livecaptions-asr[endpoint]", "livecaptions-audio", "livecaptions-meetings", "livecaptions-translation"]
+
+[build-system]
+requires = ["uv_build>=0.12.16,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+livecaptions-asr = { path = "../..", editable = true }
+livecaptions-audio = { path = "../audio-capture", editable = true }
+livecaptions-meetings = { path = "../meetings", editable = true }
+livecaptions-translation = { path = "../translation", editable = true }
+
+[dependency-groups]
+dev = ["pytest>=9.1.1", "ruff>=0.17.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

@@ -1,0 +1,17 @@
+{
+  "generator": "experiments/native-qwen/freeze_endpoint_reference.py",
+  "reference": "transformers.WhisperFeatureExtractor",
+  "versions": {
+    "transformers": "4.57.6",
+    "numpy": "2.5.4",
+    "torch": "2.11.0+cu128"
+  },
+  "rng": "numpy.default_rng(51).normal(0, 0.1, length).astype(float32)",
+  "lengths": [
+    "5000",
+    "128000",
+    "160000"
+  ],
+  "sha256": "eebf3ce73ef6d44f9b680d27caba57e172a2acd9480cd8bb45f118e87a2c4917",
+  "playback": false
+}

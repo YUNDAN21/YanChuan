@@ -1,0 +1,84 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Local settings, models, audio, and tool caches
+.env
+.env.*
+!.env.example
+!.env.*.example
+models/
+data/
+work/
+.pytest_cache/
+.ruff_cache/
+runtime/native/win-x64/*.dll
+
+# .NET/WinUI generated output and local IDE state
+bin/
+obj/
+.vs/
+TestResults/
+*.user
+*.suo
+.vscode/
+
+# Local development history and retired source snapshots
+/plan/
+/archive/
+
+# Credentials and personal application settings, wherever they are saved
+secrets.json
+secrets.*.json
+*.local.json
+*.local.toml
+*.local.yaml
+*.local.yml
+meeting-settings.json
+meeting-appearance.json
+caption-settings.json
+model-settings.json
+id_rsa
+id_ed25519
+*.key
+*.pem
+*.pfx
+*.p12
+
+# Recordings, databases, model weights, and generated release files
+*.log
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.wav
+*.flac
+*.mp3
+*.m4a
+*.mp4
+*.ogg
+*.gguf
+*.safetensors
+*.onnx
+*.pt
+*.pth
+*.ckpt
+*.exe
+*.dll
+*.pdb
+*.zip
+*.7z
+.desktop.instance.lock
+
+# OS-generated metadata
+.DS_Store
+Thumbs.db
+Desktop.ini

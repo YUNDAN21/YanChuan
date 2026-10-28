@@ -1,0 +1,26 @@
+[project]
+name = "livecaptions-backend"
+version = "0.1.0"
+description = "JSON Lines process adapter for the headless desktop service"
+requires-python = ">=3.12,<3.13"
+dependencies = ["livecaptions-service"]
+
+[project.scripts]
+livecaptions-backend = "livecaptions_backend.__main__:main"
+
+[build-system]
+requires = ["uv_build>=0.12.16,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.sources]
+livecaptions-service = { path = "../../packages/desktop-service", editable = true }
+livecaptions-asr = { path = "../..", editable = true }
+livecaptions-audio = { path = "../../packages/audio-capture", editable = true }
+livecaptions-meetings = { path = "../../packages/meetings", editable = true }
+livecaptions-translation = { path = "../../packages/translation", editable = true }
+
+[dependency-groups]
+dev = ["pytest>=9.1.1", "ruff>=0.17.1"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

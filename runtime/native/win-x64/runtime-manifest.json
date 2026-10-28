@@ -1,0 +1,74 @@
+{
+  "runtime": "CrispASR 0.8.45 + LiveCaptions ABI 1",
+  "source_revision": "e58bb48b52cf1fe957c19586297c83a2ed0d9fe4",
+  "ggml_revision": "e2ae679a563014f46c546ce6c6448e8601e4dea6",
+  "source_license": "MIT",
+  "patch_sha256": "ebc57ceaa556e45550a51542a791c9eca7c88a97647d8d845ff6e93a66564cb5",
+  "files": [
+    {
+      "name": "crispasr.dll",
+      "bytes": 17411072,
+      "sha256": "ff3a4fb9cbad973f36c87cad6744ecd9967ad1324d0478e80a19b3269fb75ba4"
+    },
+    {
+      "name": "ggml-base.dll",
+      "bytes": 683520,
+      "sha256": "5ada7a575460983d1526f4256e0a4b779702f49490bae8e7af526a4ea2f61184"
+    },
+    {
+      "name": "ggml-cpu.dll",
+      "bytes": 846848,
+      "sha256": "9b80f0d6ca1c8968551a14f6bf56c18880b0deeea6d46d0d737196147cbc4515"
+    },
+    {
+      "name": "GGML-LICENSE",
+      "bytes": 1099,
+      "sha256": "bcd8ec749126d45cb06737d0690295d73df4b6e7e194205bcf91190368f27285"
+    },
+    {
+      "name": "ggml-vulkan.dll",
+      "bytes": 45331968,
+      "sha256": "6f09207f9de218f37c851b82f175ef305d0237291d47999dd82504fa86b48e46"
+    },
+    {
+      "name": "ggml.dll",
+      "bytes": 61952,
+      "sha256": "f69f76d2ba2e902bc4b108c8607697e380dd1634fe874dde3a742b0d9cfc9a74"
+    },
+    {
+      "name": "LICENSE",
+      "bytes": 1206,
+      "sha256": "51b246c135c42131ec3bee3ed9a70284b2559f0516d76c9f617dcddb9e682869"
+    },
+    {
+      "name": "msvcp140.dll",
+      "bytes": 557728,
+      "sha256": "0f885b509a685d2bbfa652fed26b5fb31d88fbdab0a978c641d1c7b8aa460aa9"
+    },
+    {
+      "name": "THIRD_PARTY_NOTICES.txt",
+      "bytes": 38647,
+      "sha256": "2e8c1fe851ef7527cee4b9f7ef214172c6b75bdf00355b1d5335b537d856102d"
+    },
+    {
+      "name": "VC-REDIST.txt",
+      "bytes": 187,
+      "sha256": "da53b097e02b08e0fc69706102a60bc384fe756426ae4dc4a855e96f95cb2b9c"
+    },
+    {
+      "name": "vcomp140.dll",
+      "bytes": 193152,
+      "sha256": "55aba23cdcd6484fbb06f4155b8ca75adfce7a881f10afd0c49457165e677164"
+    },
+    {
+      "name": "vcruntime140.dll",
+      "bytes": 124544,
+      "sha256": "d5e4d9a3e835fa679450145d6a7d94e36573a509317111904d9b3712c30d9066"
+    },
+    {
+      "name": "vcruntime140_1.dll",
+      "bytes": 49792,
+      "sha256": "1f2d41c4aa5db0bc33ebf7b66d72943a817d7ce6cbe880502a9403823633093f"
+    }
+  ]
+}

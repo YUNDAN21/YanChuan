@@ -1,0 +1,16 @@
+[project]
+name = "livecaptions-audio"
+version = "0.1.0"
+description = "Reusable Windows WASAPI capture and bounded PCM mixing"
+requires-python = ">=3.12,<3.13"
+dependencies = ["livecaptions-asr", "pyaudiowpatch>=0.2.12.9; sys_platform == 'win32'"]
+
+[build-system]
+requires = ["uv_build>=0.12.16,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.uv.build-backend]
+module-name = "livecaptions_audio"
+
+[tool.uv.sources]
+livecaptions-asr = { path = "../..", editable = true }
