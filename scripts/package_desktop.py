@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -11,6 +12,7 @@ import zipfile
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
+from xml.etree import ElementTree
 
 from packaging.requirements import Requirement
 from packaging.utils import canonicalize_name
@@ -48,6 +50,15 @@ NATIVE_FILES = {
     "THIRD_PARTY_NOTICES.txt",
     "VC-REDIST.txt",
 }
+
+
+def application_version(root):
+    """The application project owns the executable and release version."""
+    project = ElementTree.parse(root / "apps/desktop-winui/LiveCaptions.csproj")
+    version = project.findtext("./PropertyGroup/Version", "").strip()
+    if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+        raise ValueError("Application Version must contain three numeric parts")
+    return version
 
 
 def copy_native_runtime(root, output):
@@ -243,8 +254,9 @@ def main():
     )
     args = parser.parse_args()
     root = args.root.resolve()
+    version = application_version(root)
     stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    output = (args.output or root / "dist" / ("YanChuan-win-x64-" + stamp)).resolve()
+    output = (args.output or root / "dist" / f"YanChuan-{version}-win-x64-{stamp}").resolve()
     resumable = args.resume and (output / "yanchuan.runtime.json").is_file()
     archive_path = output.parent / (output.name + ".zip")
     if (output.exists() and not resumable) or archive_path.exists():
@@ -292,7 +304,7 @@ def main():
         json.dumps(
             {
                 "format": 1,
-                "version": "0.1.0",
+                "version": version,
                 "backend": "backend/python/python.exe",
                 "architecture": "win-x64",
                 "native_runtime": "backend/native/crispasr.dll",
@@ -302,7 +314,7 @@ def main():
         "utf-8",
     )
     (output / "使用说明.txt").write_text(
-        "言川（YanChuan）Windows x64 便携版\n\n解压全部文件后，双击 YanChuan.exe。无需安装 Python、.NET 或 Visual Studio。\n"
+        f"言川（YanChuan）{version} Windows x64 便携版\n\n解压全部文件后，双击 YanChuan.exe。无需安装 Python、.NET 或 Visual Studio。\n"
         "首次打开：在左侧“模型管理”中下载 Qwen3-ASR Q8 GGUF，或选择已有兼容 GGUF。旧 safetensors 不用于本引擎。\n"
         "本包不含识别模型、分段模型、API 密钥、私人 API 地址、会议记录、录音或本地配置。\n"
         "使用云端总结/问答/翻译时，请在“API 配置”中自行添加服务。\n"
