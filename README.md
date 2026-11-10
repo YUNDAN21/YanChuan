@@ -156,5 +156,39 @@ Git 源码不包含原生 DLL。进行真实识别前，需要准备兼容的 Cr
 | `src/livecaptions_asr/` | 语音识别、音频解码与分段 API。 |
 | `packages/` | 音频采集、会议保存、AI 服务、翻译和桌面服务。 |
 | `tests/`、各模块的 `tests/` | 测试。 |
-| `docs/`、`examples/` | 接口说明与组合示例。 
+| `docs/`、`examples/` | 接口说明与组合示例。 |
+
 开发细节可查阅[项目约定](AGENTS.md)、[架构说明](docs/decoupling.md)、[Python API](docs/python-api.md)和[桌面进程接口](docs/desktop-api.md)。安装包构建见[安装版说明](installer/README.md)，公开源码范围见[发布准备说明](docs/publication.md)。
+
+## 致谢与交流
+
+感谢以下开源项目、模型及其维护者，让言川能够实现本地语音识别、会议记录和桌面字幕。
+
+### 开源模型
+
+| 模型 | 在言川中的用途 |
+| --- | --- |
+| [Qwen3-ASR](https://github.com/QwenLM/Qwen3-ASR) | 使用 0.6B / 1.7B 模型进行本地语音识别。 |
+| [Silero VAD](https://github.com/snakers4/silero-vad) | 检测音频中的人声活动，为分段提供依据。 |
+| [Smart Turn](https://github.com/pipecat-ai/smart-turn) | 判断语音是否说完，辅助选择分段切分点。 |
+
+### 开源项目
+
+| 项目 | 在言川中的用途 |
+| --- | --- |
+| [CrispASR](https://github.com/CrispStrobe/CrispASR) / [GGML](https://github.com/ggml-org/ggml) | 原生语音识别运行时、GGUF 模型推理及 CPU / Vulkan GPU 支持。 |
+| [ONNX Runtime](https://github.com/microsoft/onnxruntime) | 运行人声检测与语音端点判断模型。 |
+| [Windows App SDK / WinUI 3](https://github.com/microsoft/WindowsAppSDK) | Windows 原生桌面界面与 Fluent 控件。 |
+| [WinUIEx](https://github.com/dotMorten/WinUIEx) | 桌面窗口扩展与字幕悬浮窗的透明背景。 |
+| [PyAudioWPatch](https://github.com/s0d3s/PyAudioWPatch) | Windows WASAPI 系统声音与麦克风采集。 |
+| [Markdig](https://github.com/xoofx/markdig) | 总结、问答和笔记的 Markdown 解析。 |
+| [CSharpMath](https://github.com/verybadcat/CSharpMath) / [SkiaSharp](https://github.com/mono/SkiaSharp) | LaTeX 数学公式渲染。 |
+| [uv](https://github.com/astral-sh/uv) | Python 项目、依赖和独立虚拟环境管理。 |
+
+也感谢为这些项目贡献代码、文档、模型和问题反馈的开发者。
+
+### 社区交流
+
+感谢 [LinuxDo（LINUX DO）](https://linux.do/) 社区的开放分享，也欢迎大家在社区交流言川的使用体验、本地模型与语音应用实践。
+
+遇到问题或有功能建议，欢迎提交 [GitHub Issues](https://github.com/YUNDAN21/YanChuan/issues)；代码与文档改进欢迎提交 [Pull Request](https://github.com/YUNDAN21/YanChuan/pulls)。
