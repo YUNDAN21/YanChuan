@@ -136,7 +136,9 @@ class NativeBinding:
             )
             if not handle:
                 raise ASRError(
-                    "model_load_failed", "原生模型加载失败，请检查模型完整性和可用显存。"
+                    "model_load_failed",
+                    "原生模型加载失败，请检查模型完整性和可用"
+                    + ("内存。" if selected == "CPU" else "显存。"),
                 )
             try:
                 actual = self.lib.lc_qwen_device(handle).decode()

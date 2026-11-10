@@ -57,8 +57,14 @@ class ModelSettings:
     source: str = "huggingface"
     directory: str | None = None
     model_file: str | None = None
+    device: str = "vulkan"
 
     def __post_init__(self):
+        if not isinstance(self.device, str) or not (
+            self.device in {"cpu", "vulkan"}
+            or (self.device.startswith("Vulkan") and self.device[6:].isdigit())
+        ):
+            raise ValueError("推理设备须为 cpu、vulkan 或 VulkanN")
         if asset_by_id(self.selected_model).kind != "asr":
             raise ValueError("请选择识别模型")
         if self.source not in {"modelscope", "huggingface"}:

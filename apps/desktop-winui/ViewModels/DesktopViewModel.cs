@@ -31,6 +31,10 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
     public string State { get; private set; } = "idle";
     public string Mode { get; private set; } = "idle";
     public bool Active { get; private set; }
+    public string? SessionId { get; private set; }
+    public AudioSourceState AudioSource { get; private set; } = new("both");
+    private bool sendingSource;
+    public bool SourceSwitching => sendingSource || AudioSource.Switching;
     public bool SummaryBusy { get; private set; }
     public bool Connected { get; private set; }
     public string Status { get; private set; } = "正在连接本地后端…";
@@ -83,6 +87,24 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
     public async Task OpenAsync(MeetingItem item)
     {
         LoadMeeting(WireJson.Read<MeetingData>(await Backend.CallAsync("meetings.open", new { item.Directory })));
+    }
+
+    public async Task SetSourceAsync(string source)
+    {
+        if (SourceSwitching || source == AudioSource.Source) return;
+        sendingSource = true;
+        Error = "";
+        Notify("source.request");
+        try
+        {
+            // Events carry the confirmed source. A delayed response cannot undo a newer event.
+            await Backend.CallAsync("session.source", new { source, session_id = SessionId });
+        }
+        finally
+        {
+            sendingSource = false;
+            Notify("source.request");
+        }
     }
 
     public async Task SummarizeAsync()
@@ -157,10 +179,16 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
         switch (value.Name)
         {
             case "state":
+                SessionId = value.SessionId;
                 State = value.Payload.GetProperty("state").GetString()!;
                 Mode = value.Payload.GetProperty("mode").GetString()!;
                 Active = value.Payload.GetProperty("active").GetBoolean();
                 Status = StateLabel(State); break;
+            case "session.source":
+                if (value.SessionId != SessionId) break;
+                AudioSource = WireJson.Read<AudioSourceState>(value.Payload);
+                if (!string.IsNullOrEmpty(AudioSource.Error)) Error = AudioSource.Error;
+                break;
             case "meeting.loaded": LoadMeeting(WireJson.Read<MeetingData>(value.Payload)); break;
             case "meeting.renamed":
                 var metadata = WireJson.Read<MeetingMetadata>(value.Payload);
@@ -209,6 +237,7 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
                 Status = "已转写 " + TranscriptEntry.Format(value.Payload.GetProperty("processed_seconds").GetDouble());
                 break;
             case "finished":
+                AudioSource = AudioSource with { Switching = false, RequestedSource = null };
                 Pending = null;
                 _ = RefreshAfterFinishAsync(); break;
         }
@@ -223,6 +252,8 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
     private void Load(Snapshot value)
     {
         sequence = value.Sequence; State = value.State; Mode = value.Mode; Active = value.Active;
+        SessionId = value.SessionId;
+        AudioSource = value.AudioSource ?? new("both");
         SummaryBusy = value.SummaryBusy; SummaryStatus = string.IsNullOrEmpty(value.SummaryState)
             ? "只总结新增内容，原始转写自动保存" : value.SummaryState;
         Status = StateLabel(State); Pending = value.Pending;

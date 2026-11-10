@@ -35,6 +35,12 @@ public sealed partial class MainWindow : Window
     private readonly DispatcherTimer contextClock = new() { Interval = TimeSpan.FromMilliseconds(350) };
     private long contextRevision;
     private bool chatSending, contextRequestRunning, contextDirty, changingTheme, deletingMeeting;
+    private long notesRevision;
+    private bool notesDialogOpen;
+    private sealed record SidebarNote(string GroupId, string? NoteId, string Title)
+    {
+        public override string ToString() => Title;
+    }
 
     public MainWindow(DesktopViewModel model, string root, string? verifyFile = null, string? reportPath = null,
                       bool verifyCaptions = false)
@@ -102,7 +108,15 @@ public sealed partial class MainWindow : Window
         ScheduleButton.IsEnabled = Model.Connected;
         ThemeButton.IsEnabled = Model.Connected && !changingTheme;
         TitleEdit.IsEnabled = Model.Connected;
-        SourcePicker.IsEnabled = LanguagePicker.IsEnabled = !Model.Active;
+        LanguagePicker.IsEnabled = !Model.Active;
+        SourcePicker.IsEnabled = Model.Connected && !Model.SourceSwitching
+            && (!Model.Active || Model.Mode == "meeting" && Model.State == "recording");
+        ToolTipService.SetToolTip(SourcePicker, Model.SourceSwitching
+            ? "正在切换音源…" : "会议录音时可直接切换监听音源");
+        if (Model.Active && Model.Mode == "meeting"
+            && (kind is "session.source" or "snapshot" or "error"))
+            SourcePicker.SelectedItem = SourcePicker.Items.OfType<ComboBoxItem>().FirstOrDefault(
+                item => (string)item.Tag == (Model.AudioSource.RequestedSource ?? Model.AudioSource.Source));
         RenameButton.IsEnabled = Model.Connected && Model.Directory.Length > 0;
         CopyAllButton.IsEnabled = Model.Connected && Model.Entries.Count + Model.Summaries.Count > 0;
         CopyTranscriptButton.IsEnabled = Model.Connected && Model.Entries.Count > 0;
@@ -116,6 +130,9 @@ public sealed partial class MainWindow : Window
         ToolTipService.SetToolTip(SummaryButton, Model.SummaryBusy ? "总结中…" : "手动总结");
         FolderButton.IsEnabled = Model.Directory.Length > 0;
         ReconnectButton.Visibility = Model.Connected ? Visibility.Collapsed : Visibility.Visible;
+        NotesTree.IsEnabled = NewNoteButton.IsEnabled = ManageNotesButton.IsEnabled = Model.Connected;
+        if (kind is "configuration" or "notes.changed" or "connection")
+            _ = RefreshSidebarNotes();
         if (Model.Error.Length > 0) { ErrorBar.Message = Model.Error; ErrorBar.IsOpen = true; }
         if (kind is "configuration" or "appearance")
         {
@@ -165,6 +182,12 @@ public sealed partial class MainWindow : Window
     public async Task Run(Func<Task> action)
     { try { await action(); } catch (Exception error) { Model.ShowError(error); } }
     private static string Tag(ComboBox box) => (string)((ComboBoxItem)box.SelectedItem).Tag;
+    private async void SourceChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (updating || !Model.Connected || !Model.Active || Model.Mode != "meeting"
+            || Model.State != "recording") return;
+        await Run(() => Model.SetSourceAsync(Tag(SourcePicker)));
+    }
     private async void ToggleMeeting(object sender, RoutedEventArgs args) => await Run(async () =>
     {
         if (Model.Active) await Model.Backend.CallAsync("session.stop");
@@ -231,7 +254,70 @@ public sealed partial class MainWindow : Window
         SetClipboard(result.GetProperty("text").GetString() ?? "");
     }
     private void CopyChatMessage(object sender, RoutedEventArgs args) =>
-        SetClipboard(((Button)sender).Tag as string ?? "");
+        SetClipboard(LiveCaptions.Desktop.Rendering.MarkdownClipboard.Format(((Button)sender).Tag as string ?? ""));
+    private async Task RefreshSidebarNotes()
+    {
+        var revision = ++notesRevision;
+        if (!Model.Connected || closing) return;
+        try
+        {
+            var groups = await NotesViewModel.SidebarAsync(Model.Backend);
+            if (revision != notesRevision || !Model.Connected || closing) return;
+            var existing = NotesTree.RootNodes.ToDictionary(n => ((SidebarNote)n.Content).GroupId, n => n.IsExpanded);
+            var selected = (NotesTree.SelectedNode?.Content as SidebarNote);
+            NotesTree.RootNodes.Clear();
+            foreach (var (group, notes) in groups)
+            {
+                var parent = new TreeViewNode
+                {
+                    Content = new SidebarNote(group.Id, null, group.Title),
+                    IsExpanded = existing.TryGetValue(group.Id, out var expanded) ? expanded : true
+                };
+                foreach (var note in notes)
+                    parent.Children.Add(new TreeViewNode { Content = new SidebarNote(group.Id, note.Id, note.Title) });
+                NotesTree.RootNodes.Add(parent);
+                if (selected?.GroupId == group.Id)
+                    NotesTree.SelectedNode = selected.NoteId is null ? parent
+                        : parent.Children.FirstOrDefault(n => ((SidebarNote)n.Content).NoteId == selected.NoteId);
+            }
+            NotesEmpty.Visibility = groups.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+        }
+        catch (Exception error)
+        {
+            if (revision == notesRevision && Model.Connected && !closing) Model.ShowError(error);
+        }
+    }
+    private async Task ShowNotebook(string? groupId = null, string? noteId = null, bool createNote = false)
+    {
+        if (notesDialogOpen || !Model.Connected) return;
+        notesDialogOpen = true;
+        try
+        {
+            await Run(() => NotesDialog.ShowAsync(Root.XamlRoot, Model.Backend, Model.MeetingId,
+                groupId, noteId, createNote));
+        }
+        finally { notesDialogOpen = false; await RefreshSidebarNotes(); }
+    }
+    private async void OpenNotes(object sender, RoutedEventArgs args) => await ShowNotebook();
+    private async void NewSidebarNote(object sender, RoutedEventArgs args) =>
+        await ShowNotebook((NotesTree.SelectedNode?.Content as SidebarNote)?.GroupId, createNote: true);
+    private async void OpenSidebarNote(TreeView sender, TreeViewItemInvokedEventArgs args)
+    {
+        if (args.InvokedItem is not TreeViewNode node || node.Content is not SidebarNote item) return;
+        if (item.NoteId is null) { node.IsExpanded = !node.IsExpanded; return; }
+        await ShowNotebook(item.GroupId, item.NoteId);
+    }
+    private async void AddAnswerToNotes(object sender, RoutedEventArgs args)
+    {
+        if (((Button)sender).Tag is not ChatMessage { CanAddToNotes: true } message) return;
+        var meetingId = Model.MeetingId;
+        await Run(async () =>
+        {
+            await NotesViewModel.AddAnswerAsync(Model.Backend, meetingId, message.RequestId);
+            CopyNotice.Text = "已加入对应会议的笔记";
+            copyClock.Stop(); copyClock.Start();
+        });
+    }
     private void ToggleChat(object sender, RoutedEventArgs args)
     {
         chatOpen = !chatOpen;

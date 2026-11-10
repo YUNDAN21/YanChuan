@@ -15,6 +15,12 @@ public static class ModelManagementDialog
         var picker = new ComboBox { Header = "识别模型", HorizontalAlignment = HorizontalAlignment.Stretch };
         picker.ItemsSource = inventory.Assets.Where(a => a.Kind == "asr").ToList();
         picker.SelectedItem = ((IEnumerable<ModelAsset>)picker.ItemsSource).First(a => a.Id == inventory.Settings.SelectedModel);
+        var device = new ComboBox { Header = "推理设备", HorizontalAlignment = HorizontalAlignment.Stretch };
+        device.Items.Add(new ComboBoxItem { Content = "GPU · Vulkan 加速", Tag = "vulkan" });
+        device.Items.Add(new ComboBoxItem { Content = "CPU · 处理器推理", Tag = "cpu" });
+        if (inventory.Settings.Device.StartsWith("Vulkan"))
+            device.Items.Add(new ComboBoxItem { Content = $"GPU · {inventory.Settings.Device}", Tag = inventory.Settings.Device });
+        device.SelectedItem = device.Items.Cast<ComboBoxItem>().First(item => (string)item.Tag == inventory.Settings.Device);
         var source = new ComboBox { Header = "下载源", HorizontalAlignment = HorizontalAlignment.Stretch };
         foreach (var name in inventory.Sources ?? ["huggingface"])
             source.Items.Add(new ComboBoxItem {
@@ -39,7 +45,10 @@ public static class ModelManagementDialog
         var content = new StackPanel { Spacing = 12, MaxWidth = 560 };
         var existingModelRow = IconActions.WithField(modelFile, browseModel);
         existingModelRow.Visibility = native ? Visibility.Visible : Visibility.Collapsed;
-        foreach (var element in new UIElement[] { picker, source, IconActions.WithField(directory, browse), existingModelRow,
+        foreach (var element in new UIElement[] { picker, device,
+            new TextBlock { Text = "CPU 与 GPU 共用已下载的 GGUF。保存后释放已加载模型，下次转写使用所选设备；GPU 不可用时会显示错误。",
+                TextWrapping = TextWrapping.Wrap, MaxWidth = 520 },
+            source, IconActions.WithField(directory, browse), existingModelRow,
             new TextBlock { Text = native
                 ? "使用 CrispASR 兼容 Q8 GGUF。旧 safetensors 会保留，需要另行下载 GGUF；分段模型继续复用。"
                 : "已有 models 文件夹可直接复用。Qwen 下载源可切换；分段模型使用固定上游版本。", TextWrapping = TextWrapping.Wrap, MaxWidth = 520 },
@@ -57,6 +66,7 @@ public static class ModelManagementDialog
             progress.IsIndeterminate = busy && state.Total <= 0;
             progress.Value = state.Total > 0 ? Math.Clamp(100 * state.Current / state.Total, 0, 100) : state.State == "completed" ? 100 : 0;
             picker.IsEnabled = source.IsEnabled = directory.IsEnabled = browse.IsEnabled = !busy && !model.Active;
+            device.IsEnabled = !busy && !model.Active;
             modelFile.IsEnabled = browseModel.IsEnabled = !busy && !model.Active;
             download.IsEnabled = !busy && !model.Active;
             cancel.IsEnabled = busy;
@@ -68,6 +78,7 @@ public static class ModelManagementDialog
         {
             inventory = WireJson.Read<ModelInventory>(await backend.CallAsync("models.configure", new {
                 selected_model = ((ModelAsset)picker.SelectedItem).Id,
+                device = (string)((ComboBoxItem)device.SelectedItem).Tag,
                 source = (string)((ComboBoxItem)source.SelectedItem).Tag, directory = directory.Text.Trim(),
                 model_file = native && modelFile.Text.Trim().Length > 0 ? modelFile.Text.Trim() : null }));
             ShowAssets(inventory);

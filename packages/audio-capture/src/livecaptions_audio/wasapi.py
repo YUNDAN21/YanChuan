@@ -2,6 +2,8 @@ import logging
 import sys
 import threading
 from collections import deque
+from concurrent.futures import Future
+from queue import Empty, Queue
 from time import perf_counter
 
 import numpy as np
@@ -71,6 +73,7 @@ class WasapiRecording:
         archive: AudioSink | None = None,
         idle_seconds=120,
     ):
+        self._validate_source(source)
         self.source = source
         self.microphone_id = microphone_id
         self.system_id = system_id
@@ -88,8 +91,11 @@ class WasapiRecording:
         self._written = 0.0
         self._persist_lock = threading.Lock()
         self.warnings: list[str] = []
-        self._tracks: list[deque[CapturedBlock]] = []
+        self._tracks: list[deque[CapturedBlock]] = [deque(), deque()]
+        self._source_tracks = dict(zip(("microphone", "system"), self._tracks, strict=True))
         self._blocks_lock = threading.Lock()
+        self._source_lock = threading.Lock()
+        self._source_requests: Queue[tuple[str, Future[str]]] = Queue()
         self.thread = threading.Thread(target=self._run, name="wasapi-capture", daemon=True)
 
     def start(self):
@@ -130,66 +136,151 @@ class WasapiRecording:
             raise ASRError("capture_failed", f"录音失败：{self.error}") from self.error
         return self.archive
 
+    @staticmethod
+    def _validate_source(source):
+        if source not in {"system", "microphone", "both"}:
+            raise ValueError("音源必须为 system、microphone 或 both")
+
+    def set_source(self, source: str) -> Future[str]:
+        """Schedule a device change on its owner thread; time and stored PCM are retained."""
+        self._validate_source(source)
+        result: Future[str] = Future()
+        with self._source_lock:
+            if (
+                not self.ready_event.is_set()
+                or self.stop_event.is_set()
+                or self.done_event.is_set()
+            ):
+                raise RuntimeError("当前没有正在采集的音频")
+            self._source_requests.put((source, result))
+        return result
+
+    def _open_input(self, pa, module, available, kind):
+        selected = self.microphone_id if kind == "microphone" else self.system_id
+        candidates = [device for device in available if device["kind"] == kind]
+        if selected is not None:
+            candidates = [device for device in candidates if device["id"] == selected]
+        else:
+            candidates.sort(key=lambda device: not device["default"])
+        if not candidates:
+            label = "麦克风" if kind == "microphone" else "系统声音"
+            raise ValueError(f"找不到所选的{label}设备，请检查设备连接和选择。")
+        device = candidates[0]
+        rate, channels = device["sample_rate"], min(2, device["channels"])
+        # New streams stay muted until all requested inputs have started successfully.
+        entry = {"stream": None, "since": None}
+        blocks = self._source_tracks[kind]
+
+        def callback(data, frames, time_info, flags):
+            if self.stop_event.is_set():
+                return None, module.paComplete
+            if data and self.started:
+                samples = np.frombuffer(data, dtype=np.float32).reshape(-1, channels).mean(axis=1)
+                offset = max(0, perf_counter() - self.started - len(samples) / rate)
+                with self._blocks_lock:
+                    since = entry["since"]
+                    if since is not None and (self.limit is None or offset < self.limit):
+                        trim = max(0, int(np.ceil((since - offset) * rate)))
+                        if trim < len(samples):
+                            self._append_block_locked(
+                                blocks,
+                                CapturedBlock(offset + trim / rate, rate, samples[trim:].copy()),
+                            )
+            if flags and "设备录音缓冲曾溢出，可能存在少量丢帧。" not in self.warnings:
+                self.warnings.append("设备录音缓冲曾溢出，可能存在少量丢帧。")
+            return None, module.paContinue
+
+        entry["stream"] = pa.open(
+            format=module.paFloat32,
+            channels=channels,
+            rate=rate,
+            input=True,
+            input_device_index=int(device["id"]),
+            frames_per_buffer=1024,
+            stream_callback=callback,
+            start=False,
+        )
+        return entry
+
+    @staticmethod
+    def _close_input(entry):
+        stream = entry["stream"]
+        try:
+            if not entry.get("stopped", False):
+                stream.stop_stream()
+        except OSError:
+            logger.exception("Failed to stop audio input")
+        finally:
+            try:
+                stream.close()
+            except OSError:
+                logger.exception("Failed to close audio input")
+
+    def _switch_inputs(self, pa, module, streams, source):
+        wanted = {"microphone", "system"} if source == "both" else {source}
+        added = {}
+        try:
+            available = _devices(pa, module)
+            for kind in ("microphone", "system"):
+                if kind in wanted and kind not in streams:
+                    added[kind] = self._open_input(pa, module, available, kind)
+                    added[kind]["stream"].start_stream()
+            if self.stop_event.is_set():
+                raise RuntimeError("录音正在结束")
+        except Exception:
+            for entry in added.values():
+                self._close_input(entry)
+            raise
+        with self._blocks_lock:
+            boundary = perf_counter() - self.started
+            for entry in added.values():
+                entry["since"] = boundary
+            removed = [streams.pop(kind) for kind in list(streams) if kind not in wanted]
+            for entry in removed:
+                entry["since"] = None
+            streams.update(added)
+            self.source = source
+        for entry in removed:
+            self._close_input(entry)
+
+    def _change_requested_sources(self, pa, module, streams):
+        while not self.stop_event.is_set():
+            try:
+                source, result = self._source_requests.get_nowait()
+            except Empty:
+                return
+            if not result.set_running_or_notify_cancel():
+                continue
+            try:
+                if source != self.source:
+                    self._switch_inputs(pa, module, streams, source)
+            except Exception as exc:  # noqa: BLE001 - failed replacement keeps the current inputs
+                result.set_exception(ASRError("capture_source_failed", f"切换音源失败：{exc}"))
+            else:
+                result.set_result(self.source)
+
     def _run(self):
-        streams = []
+        streams = {}
         pa = None
         try:
             module = _pyaudio()
             pa = module.PyAudio()
             available = _devices(pa, module)
-            tracks = self._tracks
-            for kind, selected in [
-                ("microphone", self.microphone_id),
-                ("system", self.system_id),
-            ]:
+            for kind in ("microphone", "system"):
                 if self.source not in {kind, "both"}:
                     continue
-                candidates = [device for device in available if device["kind"] == kind]
-                if selected is not None:
-                    candidates = [device for device in candidates if device["id"] == selected]
-                else:
-                    candidates.sort(key=lambda device: not device["default"])
-                if not candidates:
-                    raise ValueError(f"找不到所选的 {kind} 设备，请刷新设备列表。")
-                device = candidates[0]
-                rate, channels = device["sample_rate"], min(2, device["channels"])
-                blocks: deque[CapturedBlock] = deque()
-                tracks.append(blocks)
-
-                def callback(
-                    data, frames, time_info, flags, *, rate=rate, channels=channels, blocks=blocks
-                ):
-                    if self.stop_event.is_set():
-                        return None, module.paComplete
-                    if data and self.started:
-                        samples = (
-                            np.frombuffer(data, dtype=np.float32).reshape(-1, channels).mean(axis=1)
-                        )
-                        offset = max(0, perf_counter() - self.started - len(samples) / rate)
-                        if self.limit is None or offset < self.limit:
-                            self._append_block(blocks, CapturedBlock(offset, rate, samples.copy()))
-                    if flags and "设备录音缓冲曾溢出，可能存在少量丢帧。" not in self.warnings:
-                        self.warnings.append("设备录音缓冲曾溢出，可能存在少量丢帧。")
-                    return None, module.paContinue
-
-                stream = pa.open(
-                    format=module.paFloat32,
-                    channels=channels,
-                    rate=rate,
-                    input=True,
-                    input_device_index=int(device["id"]),
-                    frames_per_buffer=1024,
-                    stream_callback=callback,
-                    start=False,
-                )
-                streams.append(stream)
+                streams[kind] = self._open_input(pa, module, available, kind)
             self.started = perf_counter()
             self.last_heartbeat = self.started
-            for stream in streams:
-                stream.start_stream()
+            for entry in streams.values():
+                entry["since"] = 0.0
+                entry["stream"].start_stream()
             self.ready_event.set()
-            while not self.stop_event.wait(0.25):
+            while not self.stop_event.wait(0.05):
+                self._change_requested_sources(pa, module, streams)
                 elapsed = perf_counter() - self.started
+                with self._blocks_lock:
+                    self._prune_locked(elapsed)
                 if self.archive:
                     self._persist(max(0, int((elapsed - 0.2) * 10) / 10))
                 if self.limit is not None and elapsed >= self.limit:
@@ -201,19 +292,25 @@ class WasapiRecording:
             if self.limit is not None:
                 self.duration = min(self.limit, self.duration)
             self.stop_event.set()
-            for stream in streams:
-                stream.stop_stream()
+            for entry in streams.values():
+                entry["stream"].stop_stream()
+                entry["stopped"] = True
             if self.archive:
                 self._persist(self.duration)
         except Exception as exc:
             logger.exception("WASAPI capture failed")
             self.error = exc
         finally:
-            for stream in streams:
-                try:
-                    stream.close()
-                except OSError:
-                    pass
+            with self._source_lock:
+                self.stop_event.set()
+                pending = []
+                while not self._source_requests.empty():
+                    pending.append(self._source_requests.get_nowait()[1])
+            for result in pending:
+                if result.set_running_or_notify_cancel():
+                    result.set_exception(RuntimeError("录音已结束"))
+            for entry in streams.values():
+                self._close_input(entry)
             if pa is not None:
                 try:
                     pa.terminate()
@@ -252,12 +349,19 @@ class WasapiRecording:
                 ]
                 for track in self._tracks
             ]
-        return mix_samples(tracks, end - start, start)
+        return mix_samples(tracks, end - start, start, active_gain=True)
 
     def _append_block(self, blocks, block):
         with self._blocks_lock:
-            blocks.append(block)
-            cutoff = block.offset_seconds - self.buffer_seconds
+            self._append_block_locked(blocks, block)
+
+    def _append_block_locked(self, blocks, block):
+        blocks.append(block)
+        self._prune_locked(block.offset_seconds)
+
+    def _prune_locked(self, elapsed):
+        cutoff = elapsed - self.buffer_seconds
+        for blocks in self._tracks:
             while (
                 blocks
                 and blocks[0].offset_seconds + len(blocks[0].samples) / blocks[0].sample_rate

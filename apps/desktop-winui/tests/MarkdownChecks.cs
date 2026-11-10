@@ -46,6 +46,19 @@ static class MarkdownChecks
         Check(MarkdownDocument.NormalizeMathDelimiters(@"`\(x\)` \\(x\) \(unclosed") == @"`\(x\)` \\(x\) \(unclosed",
             "Code, escaped or unclosed math was modified");
         Check(MarkdownDocument.Parse("$$\nx^2+y^2=z^2\n$$").OfType<MathBlock>().Any(), "Dollar display math missing");
+        var clipboard = MarkdownClipboard.Format("正文 $x_i^2$ 和 \\(a+b\\)。\n\n$$\nE=mc^2\n$$\n\n\\[c+d\\]\n\n```latex\nz=1\n```\n\n`$raw$`\n\n```text\n$x$\n```");
+        Check(clipboard.Contains("$x_i^2$") && clipboard.Contains("$a+b$"), "Inline clipboard math delimiters");
+        Check(clipboard.Contains("$$\nE=mc^2\n$$") && clipboard.Contains("$$\nc+d\n$$")
+            && clipboard.Contains("$$\nz=1\n$$"), "Display clipboard math delimiters");
+        Check(MarkdownClipboard.Formula(" x_i^2 ", false) == "$x_i^2$"
+            && MarkdownClipboard.Formula(" E=mc^2 ", true) == "$$\nE=mc^2\n$$",
+            "Clipboard formula exact delimiters and newlines");
+        Check(clipboard.Contains("`$raw$`") && clipboard.Contains("```text\n$x$\n```"), "Clipboard changed literal code");
+        Check(SelectionScrollSpeed.At(250, 500) == 0, "Selection scroll should stop away from edges");
+        Check(SelectionScrollSpeed.At(10, 500) < 0 && SelectionScrollSpeed.At(490, 500) > 0,
+            "Selection scroll directions");
+        Check(Math.Abs(SelectionScrollSpeed.At(-500, 500)) == 140
+            && SelectionScrollSpeed.At(900, 500) == 140, "Selection scroll exceeded slow speed cap");
         var formulas = new[]
         {
             @"E=mc^2", @"\frac{a+b}{c_d}", @"\sum_{i=1}^{n} x_i",

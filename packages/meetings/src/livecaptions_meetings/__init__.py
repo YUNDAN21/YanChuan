@@ -17,6 +17,7 @@ from .client import (
 )
 from .deletion import delete_meeting, meeting_for_deletion
 from .model_catalog import ModelCatalogError, ModelCatalogSettings, list_api_models
+from .notes import NoteStore
 from .profiles import ApiProfile, ApiProfileLibrary
 from .prompts import SUMMARY_SYSTEM_PROMPT
 from .protocols import PROTOCOL_LABELS
@@ -40,6 +41,7 @@ __all__ = [
     "MeetingSummary",
     "ModelCatalogError",
     "ModelCatalogSettings",
+    "NoteStore",
     "PromptTemplate",
     "PromptTemplateLibrary",
     "SummaryClient",

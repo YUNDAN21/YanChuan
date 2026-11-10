@@ -2,7 +2,8 @@
 
 import threading
 from collections.abc import Callable
-from typing import Protocol
+from concurrent.futures import Future
+from typing import Protocol, runtime_checkable
 
 from livecaptions_asr.domain import ASRError, AudioData
 from livecaptions_asr.results import StreamEvent
@@ -17,6 +18,13 @@ class Capture(Protocol):
     def stop(self): ...
 
 
+@runtime_checkable
+class SwitchableCapture(Protocol):
+    """Optional capture capability; switching does not reset the PCM timeline."""
+
+    def set_source(self, source: str) -> Future[str]: ...
+
+
 class SessionRunner:
     """One consumer per PCM stream; capture opens only after model preparation."""
 
@@ -26,6 +34,17 @@ class SessionRunner:
         self.recognizer = recognizer
         self.segmenter_factory = segmenter_factory
         self.capture_factory = capture_factory
+        self._capture: Capture | None = None
+        self._capture_lock = threading.Lock()
+
+    def set_source(self, source: str) -> Future[str]:
+        """Queue an input change without waiting for inference or reopening the stream."""
+        with self._capture_lock:
+            if self._capture is None:
+                raise RuntimeError("当前没有正在采集的音频")
+            if not isinstance(self._capture, SwitchableCapture):
+                raise TypeError("当前采集器不支持切换音源")
+            return self._capture.set_source(source)
 
     def run(
         self,
@@ -60,6 +79,8 @@ class SessionRunner:
                 return
             with timer.phase("audio_start"):
                 capture.start()
+            with self._capture_lock:
+                self._capture = capture
             on_state("recording")
             cursor = 0.0
             while True:
@@ -67,6 +88,8 @@ class SessionRunner:
                 if cancel.is_set():
                     return
                 if stop.is_set() and not capture_stopped:
+                    with self._capture_lock:
+                        self._capture = None
                     on_state("draining")
                     capture.stop()
                     capture_stopped = True
@@ -91,6 +114,8 @@ class SessionRunner:
                     return
                 stop.wait(0.05)
         finally:
+            with self._capture_lock:
+                self._capture = None
             # Cancellation and failures stop devices without additional inference.
             try:
                 if capture is not None and not capture_stopped:

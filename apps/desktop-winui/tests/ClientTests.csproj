@@ -6,14 +6,18 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Remove="SelectionApp/**/*.cs" />
     <Compile Include="../Models/Contracts.cs" Link="Contracts.cs" />
     <Compile Include="../Services/IBackendClient.cs" Link="IBackendClient.cs" />
     <Compile Include="../Services/ApplicationPaths.cs" Link="ApplicationPaths.cs" />
     <Compile Include="../Services/BackendClient.cs" Link="BackendClient.cs" />
     <Compile Include="../ViewModels/DesktopViewModel.cs" Link="DesktopViewModel.cs" />
+    <Compile Include="../ViewModels/NotesViewModel.cs" Link="NotesViewModel.cs" />
     <Compile Include="../ViewModels/SubtitleProjection.cs" Link="SubtitleProjection.cs" />
     <Compile Include="../ViewModels/CaptionChromeState.cs" Link="CaptionChromeState.cs" />
     <Compile Include="../Rendering/MarkdownDocument.cs" Link="MarkdownDocument.cs" />
+    <Compile Include="../Rendering/MarkdownClipboard.cs" Link="MarkdownClipboard.cs" />
+    <Compile Include="../Rendering/SelectionScrollSpeed.cs" Link="SelectionScrollSpeed.cs" />
     <Compile Include="../Rendering/FormulaRenderer.cs" Link="FormulaRenderer.cs" />
     <PackageReference Include="Markdig" Version="1.5.0" />
     <PackageReference Include="CSharpMath.SkiaSharp" Version="0.5.1" />

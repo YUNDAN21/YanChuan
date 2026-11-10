@@ -78,3 +78,7 @@ tail = segmenter.flush(current_end_seconds)
 以上是接口、依赖和组合功能的验证。分段准确率、小时级稳定性和既有 Qwen SDPA 长段窗口问题的待办保持不变。
 
 原生运行时迁移：识别适配器只调用固定 C ABI，GGUF 下载/配置在服务层，DLL 发布在外层脚本。`Recognizer.close()` 在服务切换模型/正常退出时释放权重；旧实现只在开发者本地归档，核心不导入归档。
+
+笔记的分组、正文和摘录去重由会议包 `NoteStore` 维护，桌面服务 `NotesService` 负责按显式会议/请求 ID 读取已完成回答。JSONL 只路由，WinUI `NotesViewModel` 负责调用和选中项、`NotesDialog` 负责编辑呈现；核心识别不依赖笔记。笔记数据库独立于会议数据库，删除会议不删除笔记。
+
+录音中切换监听来源由采集包 `SwitchableCapture.set_source()` 提供可选异步能力，`SessionRunner` 转发给正在运行的采集器。WASAPI 所在线程负责设备事务、同一时间轴及有界音轨；桌面服务负责会议状态校验、请求归属和结果事件。JSONL 仅路由 `session.source`，WinUI 只发请求并投影确认状态；核心识别、语义分段及会议保存无需重建。

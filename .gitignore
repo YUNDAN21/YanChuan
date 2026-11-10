@@ -15,6 +15,8 @@ wheels/
 !.env.example
 !.env.*.example
 models/
+!apps/desktop-winui/Models/
+!apps/desktop-winui/Models/*.cs
 data/
 work/
 .pytest_cache/

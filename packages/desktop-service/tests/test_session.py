@@ -1,4 +1,5 @@
 import threading
+from concurrent.futures import Future
 
 import numpy as np
 import pytest
@@ -124,3 +125,67 @@ def test_cancel_stops_capture_and_does_not_request_final_inference():
     runner.run("auto", threading.Event(), cancel, accept, lambda state: None)
     assert capture.stops == 1
     assert events and all(event.kind == "partial" for event in events)
+
+
+def test_source_switch_forwards_to_capture_without_new_recognition_stream():
+    class SwitchingCapture(Capture):
+        def set_source(self, source):
+            self.source = source
+            future = Future()
+            future.set_result(source)
+            return future
+
+    capture = SwitchingCapture(np.ones(24224, np.float32) * 0.1)
+    runner = SessionRunner(Recognizer(Engine()), EnergySegmenter, lambda: capture)
+    events = []
+    with pytest.raises(RuntimeError):
+        runner.set_source("system")
+
+    def ready(state):
+        if state == "recording":
+            assert runner.set_source("system").result() == "system"
+            assert runner.set_source("both").result() == "both"
+
+    runner.run("zh", threading.Event(), threading.Event(), events.extend, ready)
+    assert capture.source == "both"
+    assert capture.stops == 1
+    assert capture.windows == [(0, 1), (1, len(capture.samples) / 16000)]
+    assert sum(event.kind == "sentence" for event in events) == 1
+    with pytest.raises(RuntimeError):
+        runner.set_source("microphone")
+
+
+def test_source_switch_remains_available_while_inference_is_busy():
+    entered, release = threading.Event(), threading.Event()
+
+    class BlockingEngine(Engine):
+        def recognize(self, *args):
+            if capture.opened:
+                entered.set()
+                assert release.wait(3)
+            return super().recognize(*args)
+
+    capture = Capture(np.ones(24224, np.float32) * 0.1)
+    requests = []
+
+    def change(source):
+        requests.append(source)
+        result = Future()
+        result.set_result(source)
+        return result
+
+    capture.set_source = change
+    runner = SessionRunner(Recognizer(BlockingEngine()), EnergySegmenter, lambda: capture)
+    thread = threading.Thread(
+        target=runner.run,
+        args=("zh", threading.Event(), threading.Event(), lambda _: None, lambda _: None),
+    )
+    thread.start()
+    try:
+        assert entered.wait(3)
+        assert runner.set_source("microphone").result(1) == "microphone"
+        assert requests == ["microphone"] and thread.is_alive()
+    finally:
+        release.set()
+        thread.join(3)
+    assert not thread.is_alive()

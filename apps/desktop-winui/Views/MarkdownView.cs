@@ -15,13 +15,22 @@ using Windows.Storage.Streams;
 using Windows.UI.Text;
 using MarkdownDocument = LiveCaptions.Desktop.Rendering.MarkdownDocument;
 using Block = Markdig.Syntax.Block;
+using System.Text;
+using Windows.ApplicationModel.DataTransfer;
+using Windows.System;
+using Windows.UI.Core;
 
 namespace LiveCaptions.Desktop.Views;
 
 /// <summary>Native, offline Markdown presentation shared by summaries and meeting chat.</summary>
 public sealed class MarkdownView : UserControl
 {
-    private readonly StackPanel document = new() { Spacing = 8, HorizontalAlignment = HorizontalAlignment.Stretch };
+    // A single native text document owns the selection for the whole answer.
+    // Separate RichTextBlocks per Markdown block prevent dragging across paragraphs.
+    private readonly RichTextBlock document = CreateDocument();
+    private readonly Dictionary<InlineUIContainer, string> formulas = [];
+    private readonly List<(Image Image, double Width, double Height)> displayImages = [];
+    private readonly SelectionAutoScroll selectionScroll;
     public static readonly DependencyProperty TextProperty = DependencyProperty.Register(
         nameof(Text), typeof(string), typeof(MarkdownView), new PropertyMetadata("", Changed));
     public string Text { get => (string)GetValue(TextProperty); set => SetValue(TextProperty, value); }
@@ -29,7 +38,77 @@ public sealed class MarkdownView : UserControl
     public MarkdownView()
     {
         Content = document;
+        selectionScroll = new SelectionAutoScroll(document);
+        document.SizeChanged += (_, _) => FitDisplayImages();
+        document.ContextFlyout = CopyMenu();
+        document.SelectionFlyout = CopyMenu();
+        document.PreviewKeyDown += (_, args) =>
+        {
+            var control = (Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control)
+                & CoreVirtualKeyStates.Down) != 0;
+            if (control && args.Key is VirtualKey.C or VirtualKey.Insert)
+            { CopySelection(); args.Handled = true; }
+            else if (control && args.Key == VirtualKey.A)
+            { document.SelectAll(); args.Handled = true; }
+        };
         ActualThemeChanged += (_, _) => Render();
+    }
+
+    private MenuFlyout CopyMenu()
+    {
+        var menu = new MenuFlyout();
+        var copy = new MenuFlyoutItem { Text = "复制", Icon = new SymbolIcon(Symbol.Copy) };
+        copy.Click += (_, _) => CopySelection();
+        var all = new MenuFlyoutItem { Text = "全选此条回复" };
+        all.Click += (_, _) => document.SelectAll();
+        menu.Items.Add(copy); menu.Items.Add(all);
+        return menu;
+    }
+
+    public void CopySelection()
+    {
+        var value = SelectionText();
+        if (value.Length == 0) return;
+        var data = new DataPackage(); data.SetText(value);
+        Clipboard.SetContent(data); Clipboard.Flush();
+    }
+
+    // Native SelectedText omits InlineUIContainer images. Serialize the selected
+    // document range ourselves and substitute each selected formula's LaTeX.
+    public string SelectionText()
+    {
+        int start = document.SelectionStart.Offset, end = document.SelectionEnd.Offset;
+        if (start == end) return "";
+        var result = new StringBuilder();
+        foreach (var paragraph in document.Blocks.OfType<Paragraph>())
+        {
+            Append(paragraph.Inlines);
+            if (start < paragraph.ContentEnd.Offset && end > paragraph.ContentEnd.Offset)
+                result.AppendLine();
+        }
+        return result.ToString();
+
+        void Append(InlineCollection inlines)
+        {
+            foreach (var inline in inlines)
+            {
+                if (inline is Span span) { Append(span.Inlines); continue; }
+                if (inline is InlineUIContainer formula)
+                {
+                    if (end > formula.ElementStart.Offset && start < formula.ElementEnd.Offset
+                        && formulas.TryGetValue(formula, out var latex)) result.Append(latex);
+                    continue;
+                }
+                if (end <= inline.ContentStart.Offset || start >= inline.ContentEnd.Offset) continue;
+                if (inline is Run run)
+                {
+                    int from = Math.Clamp(start - run.ContentStart.Offset, 0, run.Text.Length);
+                    int to = Math.Clamp(end - run.ContentStart.Offset, 0, run.Text.Length);
+                    if (to > from) result.Append(run.Text.AsSpan(from, to - from));
+                }
+                else if (inline is LineBreak) result.AppendLine();
+            }
+        }
     }
 
     private static void Changed(DependencyObject sender, DependencyPropertyChangedEventArgs args) =>
@@ -38,101 +117,151 @@ public sealed class MarkdownView : UserControl
 
     private void Render()
     {
-        document.Children.Clear();
-        foreach (var block in MarkdownDocument.Parse(Text)) document.Children.Add(RenderBlock(block));
+        document.Blocks.Clear();
+        formulas.Clear();
+        displayImages.Clear();
+        AddBlocks(MarkdownDocument.Parse(Text), document);
     }
 
-    private FrameworkElement RenderBlock(Block block) => block switch
+    private static RichTextBlock CreateDocument() => new()
     {
-        MathBlock math => Formula(math.Lines.ToString(), true),
-        HeadingBlock heading => Rich(heading.Inline, heading.Level switch { 1 => 25, 2 => 21, 3 => 18, _ => 16 }, true),
-        ParagraphBlock paragraph => Rich(paragraph.Inline),
-        FencedCodeBlock code when code.Info?.ToString().Trim() is "math" or "latex" or "tex" => Formula(code.Lines.ToString(), true),
-        CodeBlock code => Code(code.Lines.ToString()),
-        QuoteBlock quote => new Border
-        {
-            BorderBrush = Brush("AccentFillColorDefaultBrush"), BorderThickness = new Thickness(3, 0, 0, 0),
-            Padding = new Thickness(12, 4, 0, 4), Child = Blocks(quote)
-        },
-        ListBlock list => List(list),
-        Table table => TableView(table),
-        ThematicBreakBlock => new Border
-        {
-            Height = 1, Margin = new Thickness(0, 8, 0, 8), Background = Brush("DividerStrokeColorDefaultBrush")
-        },
-        HtmlBlock html => Plain(html.Lines.ToString()),
-        ContainerBlock container => Blocks(container),
-        LeafBlock leaf when leaf.Inline is not null => Rich(leaf.Inline),
-        LeafBlock leaf => Plain(leaf.Lines.ToString()),
-        _ => new TextBlock()
+        FontSize = 15, IsTextSelectionEnabled = true, TextWrapping = TextWrapping.Wrap,
+        HorizontalAlignment = HorizontalAlignment.Stretch
     };
 
-    private StackPanel Blocks(ContainerBlock blocks)
+    private void AddBlocks(ContainerBlock blocks, RichTextBlock target, double indent = 0)
     {
-        var stack = new StackPanel { Spacing = 8 };
-        foreach (var block in blocks) stack.Children.Add(RenderBlock(block));
-        return stack;
+        foreach (var block in blocks) AddBlock(block, target, indent);
     }
 
-    private FrameworkElement List(ListBlock list)
+    private void AddBlock(Block block, RichTextBlock target, double indent)
     {
-        var stack = new StackPanel { Spacing = 6 };
-        var number = int.TryParse(list.OrderedStart, out var start) ? start : 1;
-        foreach (var item in list)
+        switch (block)
         {
-            var row = new Grid { ColumnSpacing = 8 };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
-            var marker = Plain(list.IsOrdered ? $"{number++}." : "•");
-            marker.MinWidth = 16;
-            var content = RenderBlock(item);
-            Grid.SetColumn(content, 1);
-            row.Children.Add(marker); row.Children.Add(content); stack.Children.Add(row);
+            case MathBlock math:
+                AddFormula(NewParagraph(target, indent).Inlines, math.Lines.ToString(), true);
+                break;
+            case HeadingBlock heading:
+                AddParagraph(target, heading.Inline, indent,
+                    heading.Level switch { 1 => 25, 2 => 21, 3 => 18, _ => 16 }, true);
+                break;
+            case ParagraphBlock paragraph:
+                AddParagraph(target, paragraph.Inline, indent);
+                break;
+            case FencedCodeBlock code when code.Info?.ToString().Trim() is "math" or "latex" or "tex":
+                AddFormula(NewParagraph(target, indent).Inlines, code.Lines.ToString(), true);
+                break;
+            case CodeBlock code:
+                var codeParagraph = NewParagraph(target, indent + 12, 13);
+                codeParagraph.FontFamily = new FontFamily("Cascadia Mono, Consolas");
+                codeParagraph.Inlines.Add(new Run { Text = code.Lines.ToString() });
+                break;
+            case QuoteBlock quote:
+                var first = target.Blocks.Count;
+                AddBlocks(quote, target, indent + 16);
+                for (var index = first; index < target.Blocks.Count; index++)
+                    target.Blocks[index].Foreground = new SolidColorBrush(ActualTheme == ElementTheme.Dark
+                        ? Microsoft.UI.ColorHelper.FromArgb(255, 200, 200, 200)
+                        : Microsoft.UI.ColorHelper.FromArgb(255, 80, 80, 80));
+                break;
+            case ListBlock list:
+                AddList(list, target, indent);
+                break;
+            case Table table:
+                AddTable(table, target, indent);
+                break;
+            case ThematicBreakBlock:
+                AddVisual(target, new Border
+                {
+                    Width = 160, Height = 1, Margin = new Thickness(0, 8, 0, 8),
+                    Background = Brush("DividerStrokeColorDefaultBrush")
+                }, indent);
+                break;
+            case ContainerBlock container:
+                AddBlocks(container, target, indent);
+                break;
+            case LeafBlock leaf when leaf.Inline is not null:
+                AddParagraph(target, leaf.Inline, indent);
+                break;
+            case LeafBlock leaf:
+                NewParagraph(target, indent).Inlines.Add(new Run { Text = leaf.Lines.ToString() });
+                break;
         }
-        return stack;
     }
 
-    private FrameworkElement TableView(Table table)
+    private static Paragraph NewParagraph(RichTextBlock target, double indent, double size = 15)
     {
-        var grid = new Grid();
-        var columns = table.OfType<TableRow>().Select(row => row.Count).DefaultIfEmpty(0).Max();
-        for (var column = 0; column < columns; column++)
-            grid.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-        var index = 0;
+        var paragraph = new Paragraph
+        {
+            FontSize = size, LineHeight = size * 1.8, Margin = new Thickness(indent, 0, 0, 8)
+        };
+        target.Blocks.Add(paragraph);
+        return paragraph;
+    }
+
+    private void AddParagraph(RichTextBlock target, ContainerInline? inlines,
+        double indent, double size = 15, bool bold = false)
+    {
+        var paragraph = NewParagraph(target, indent, size);
+        paragraph.FontWeight = bold ? FontWeights.SemiBold : FontWeights.Normal;
+        if (inlines is not null) AddInlines(inlines, paragraph.Inlines);
+    }
+
+    private static void AddVisual(RichTextBlock target, FrameworkElement element, double indent)
+    {
+        // Inline UI is measured independently of the surrounding text. Keep wide
+        // formulas scrollable within the document instead of expanding it.
+        if (element is TextBlock fallback)
+        {
+            NewParagraph(target, indent).Inlines.Add(new Run { Text = fallback.Text });
+            return;
+        }
+        element.SetBinding(MaxWidthProperty, new Microsoft.UI.Xaml.Data.Binding
+        {
+            Source = target, Path = new PropertyPath(nameof(ActualWidth))
+        });
+        NewParagraph(target, indent).Inlines.Add(new InlineUIContainer { Child = element });
+    }
+
+    private void AddList(ListBlock list, RichTextBlock target, double indent)
+    {
+        var number = int.TryParse(list.OrderedStart, out var start) ? start : 1;
+        foreach (var item in list.OfType<ListItemBlock>())
+        {
+            var first = target.Blocks.Count;
+            AddBlocks(item, target, indent + 24);
+            if (target.Blocks.Count == first) NewParagraph(target, indent + 24);
+            var paragraph = (Paragraph)target.Blocks[first];
+            paragraph.TextIndent = -24;
+            paragraph.Inlines.Insert(0, new Run { Text = list.IsOrdered ? $"{number++}.  " : "•  " });
+        }
+    }
+
+    private void AddTable(Table table, RichTextBlock target, double indent)
+    {
+        // Keep every cell in the same text document. Embedded grids introduce
+        // independent selections and omit their text when a whole answer is copied.
         foreach (var row in table.OfType<TableRow>())
         {
-            grid.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+            var paragraph = NewParagraph(target, indent);
+            paragraph.FontWeight = row.IsHeader ? FontWeights.SemiBold : FontWeights.Normal;
             for (var column = 0; column < row.Count; column++)
             {
-                var content = Blocks((TableCell)row[column]);
-                content.MaxWidth = 420;
-                if (row.IsHeader)
-                    foreach (var text in content.Children.OfType<RichTextBlock>()) text.FontWeight = FontWeights.SemiBold;
-                var border = new Border
-                {
-                    BorderBrush = Brush("DividerStrokeColorDefaultBrush"), BorderThickness = new Thickness(0, 0, 1, 1),
-                    Padding = new Thickness(10, 8, 10, 8), Child = content,
-                    Background = row.IsHeader ? Brush("SubtleFillColorSecondaryBrush") : null
-                };
-                Grid.SetRow(border, index); Grid.SetColumn(border, column); grid.Children.Add(border);
+                if (column > 0) paragraph.Inlines.Add(new Run { Text = "    │    " });
+                AddCell((TableCell)row[column], paragraph.Inlines);
             }
-            index++;
         }
-        return HorizontalScroll(grid);
     }
 
-    private RichTextBlock Rich(ContainerInline? inlines, double size = 15, bool bold = false)
+    private void AddCell(ContainerBlock cell, InlineCollection target)
     {
-        var text = new RichTextBlock
+        foreach (var block in cell)
         {
-            FontSize = size, IsTextSelectionEnabled = true, TextWrapping = TextWrapping.Wrap,
-            FontWeight = bold ? FontWeights.SemiBold : FontWeights.Normal,
-            HorizontalAlignment = HorizontalAlignment.Stretch
-        };
-        var paragraph = new Paragraph { LineHeight = size * 1.8 };
-        if (inlines is not null) AddInlines(inlines, paragraph.Inlines);
-        text.Blocks.Add(paragraph);
-        return text;
+            if (block != cell.FirstOrDefault()) target.Add(new Run { Text = " " });
+            if (block is LeafBlock { Inline: { } inline }) AddInlines(inline, target);
+            else if (block is LeafBlock leaf) target.Add(new Run { Text = leaf.Lines.ToString() });
+            else if (block is ContainerBlock nested) AddCell(nested, target);
+        }
     }
 
     private void AddInlines(ContainerInline source, InlineCollection target)
@@ -142,7 +271,7 @@ public sealed class MarkdownView : UserControl
             switch (inline)
             {
                 case MathInline math:
-                    target.Add(new InlineUIContainer { Child = Formula(math.Content.ToString(), false) });
+                    AddFormula(target, math.Content.ToString(), false);
                     break;
                 case LiteralInline literal:
                     target.Add(new Run { Text = literal.Content.ToString() });
@@ -188,32 +317,11 @@ public sealed class MarkdownView : UserControl
         }
     }
 
-    private TextBlock Plain(string text) => new()
+    private void AddFormula(InlineCollection target, string latex, bool display)
     {
-        Text = text, FontSize = 15, TextWrapping = TextWrapping.Wrap, IsTextSelectionEnabled = true
-    };
-
-    private FrameworkElement Code(string code) => new Border
-    {
-        Background = Brush("SubtleFillColorSecondaryBrush"), CornerRadius = new CornerRadius(6),
-        Padding = new Thickness(12), Child = HorizontalScroll(new TextBlock
-        {
-            Text = code, FontFamily = new FontFamily("Cascadia Mono, Consolas"), FontSize = 13,
-            IsTextSelectionEnabled = true
-        })
-    };
-
-    private static ScrollViewer HorizontalScroll(UIElement child) => new()
-    {
-        Content = child, HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
-        HorizontalScrollMode = ScrollMode.Enabled, VerticalScrollMode = ScrollMode.Disabled,
-        VerticalScrollBarVisibility = ScrollBarVisibility.Disabled
-    };
-
-    private FrameworkElement Formula(string latex, bool display)
-    {
+        var copy = MarkdownClipboard.Formula(latex, display);
         var rendered = FormulaRenderer.Render(latex, display, ActualTheme == ElementTheme.Dark);
-        if (rendered is null) return Plain(display ? $"$$\n{latex}\n$$" : $"${latex}$");
+        if (rendered is null) { target.Add(new Run { Text = copy }); return; }
         var image = new Image
         {
             Width = rendered.Width, Height = rendered.Height, Stretch = Stretch.Uniform,
@@ -222,10 +330,33 @@ public sealed class MarkdownView : UserControl
         AutomationProperties.SetName(image, "公式 " + latex);
         ToolTipService.SetToolTip(image, latex);
         SetSource(image, rendered.Png);
-        if (!display) return image;
-        var scroll = HorizontalScroll(image);
-        scroll.Margin = new Thickness(0, 8, 0, 8);
-        return scroll;
+        // Explicit dimensions prevent the inline's measure pass from collapsing
+        // an Auto-sized ScrollViewer (which made display formulas invisible).
+        var container = new InlineUIContainer { Child = image };
+        target.Add(container);
+        formulas[container] = copy;
+        if (display)
+        {
+            displayImages.Add((image, rendered.Width, rendered.Height));
+            FitDisplayImages();
+        }
+        image.Tapped += (_, args) =>
+        {
+            document.Select(container.ElementStart, container.ElementEnd);
+            document.Focus(FocusState.Programmatic);
+            args.Handled = true;
+        };
+    }
+
+    private void FitDisplayImages()
+    {
+        if (document.ActualWidth <= 0) return;
+        foreach (var (image, width, height) in displayImages)
+        {
+            var factor = Math.Min(1, Math.Max(1, document.ActualWidth - 24) / width);
+            image.Width = width * factor;
+            image.Height = height * factor;
+        }
     }
 
     private static async void SetSource(Image image, byte[] bytes)

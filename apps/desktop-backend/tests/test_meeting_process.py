@@ -86,12 +86,21 @@ def test_real_process_rename_full_copy_and_chat_events(tmp_path):
         assert conversation["messages"][-1]["request_id"] == request["request_id"]
         assert "周五完成验收。" * 2000 in received[0]["messages"][1]["content"]
         assert call(8, "snapshot")["meeting"]["metadata"]["summary_cursor"] == 0
+        note = call(81, "notes.from_chat", meeting_id=meeting_id, request_id=request["request_id"])
+        assert note["content"] == "周五完成。[00:00:03]"
+        assert call(82, "notes.groups")[0]["meeting_id"] == meeting_id
+        call(83, "notes.update", note_id=note["id"], title="笔记新名", content="整理后的文字")
+        assert call(84, "notes.list", group_id=note["group_id"])[0]["title"] == "笔记新名"
         deleted = call(9, "meetings.delete", directory=str(directory))
         assert deleted["id"] == meeting_id and deleted["current"]
         assert not directory.exists()
         assert call(10, "snapshot")["meeting"] is None
         assert call(11, "meetings.list") == []
         assert any(event["name"] == "meeting.deleted" for event in events)
+        assert call(85, "notes.list", group_id=note["group_id"])[0]["content"] == "整理后的文字"
+        assert any(event["name"] == "notes.changed" for event in events)
+        call(86, "notes.group.delete", group_id=note["group_id"])
+        assert call(87, "notes.groups") == []
         call(12, "shutdown")
         assert process.wait(timeout=15) == 0
         assert "test-key" not in process.stderr.read()

@@ -102,3 +102,26 @@ chat.close()
 ChatClient 协议只要求 model 与 chat(messages)，无需真实 HTTP 即可验证。ChatHistory 单独连接会议 SQLite，按需建表兼容旧记录；ChatCoordinator 提供独立后台调度。完整原文、总结和已完成问答组成当前请求快照，失败轮次不参与下一次模型请求。默认 272k token 预算，不复用总结的 12000 字符批次；字符类别估算仅用于预算，实际 token 数依服务。相关接口和状态见 [桌面 API](../../docs/desktop-api.md)。
 
 协议多轮格式依据 [OpenAI conversation state](https://developers.openai.com/api/docs/guides/conversation-state) 与 [Anthropic Messages](https://platform.claude.com/docs/en/api/messages/create)。聊天和总结各自使用专用提示词，网络客户端复用协议和安全响应解析。
+
+## 分组笔记 API
+
+`NoteStore(path)` 不依赖识别或界面：
+
+```python
+from pathlib import Path
+from livecaptions_meetings import NoteStore
+
+notes = NoteStore(Path("data/notes.sqlite3"))
+try:
+    group = notes.create_group("阅读笔记")
+    note = notes.create(group["id"], "讨论摘要", "## 要点\n\n保留 Markdown 和 $x^2$。")
+    notes.update(note["id"], "整理后的摘要", "新的正文")
+    print(notes.list(group["id"]))
+finally:
+    notes.close()
+```
+
+分组支持 `groups/create_group/rename_group/delete_group`，笔记支持
+`list/get/create/update/delete`。可选的 meeting_id 用于稳定的会议关联，
+source_request_id 用于同组内摘录幂等；重复摘录不覆盖编辑。
+删除分组级联删除笔记，正文和来源会议原文独立保存。

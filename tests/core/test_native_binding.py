@@ -44,6 +44,20 @@ def test_open_layout_and_failed_actual_device_check_release_owned_session():
     assert calls == [("device", b"cpu"), ("close", 21)]
 
 
+def test_cpu_disables_gpu_and_preserves_threads_without_loading_vulkan():
+    parameters = []
+
+    def open_session(model, kind, pointer):
+        params = ctypes.cast(pointer, ctypes.POINTER(OpenParams)).contents
+        parameters.append((params.use_gpu, params.n_threads))
+        return 21
+
+    adapter, calls = binding(crispasr_session_open_with_params=open_session)
+    options = NativeQwenOptions(Path("fixture.gguf"), Path("native.dll"), device="cpu", threads=6)
+    assert adapter.open(options) == (21, "CPU", "CPU")
+    assert parameters == [(0, 6)] and calls[0] == ("device", b"cpu")
+
+
 def test_result_is_freed_on_success_and_invalid_utf8():
     samples = np.ones(16000, dtype=np.float32)
     adapter, calls = binding()

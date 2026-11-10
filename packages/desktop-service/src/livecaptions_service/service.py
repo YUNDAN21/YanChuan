@@ -33,6 +33,7 @@ from .appearance import AppearanceSettings
 from .config import MeetingSettings
 from .events import ServiceEvent
 from .models import ModelManager, ModelSettings
+from .notes import NotesService
 from .presentation import CaptionHistory
 from .runtime import DesktopRuntime, InputSelection
 from .startup_trace import StartupTrace
@@ -54,6 +55,7 @@ class DesktopService:
         model_manager_factory=ModelManager,
     ):
         self.root = Path(root).resolve()
+        self.notes = NotesService(self.root)
         self.settings_path = self.root / "data/meeting-settings.json"
         self.settings = MeetingSettings.load(self.settings_path)
         self.appearance_path = self.root / "data/meeting-appearance.json"
@@ -70,6 +72,9 @@ class DesktopService:
         self._stop = threading.Event()
         self._cancel = threading.Event()
         self._thread = None
+        self._runner = None
+        self.source = "both"
+        self.requested_source = None
         self._sequence = 0
         self.session_id = None
         self.mode = "idle"
@@ -92,23 +97,34 @@ class DesktopService:
         )
 
     def model_inventory(self):
-        return self.models.inventory()
+        inventory = self.models.inventory()
+        inventory["settings"]["device"] = getattr(
+            self.runtime, "device", self.models.settings.device
+        )
+        return inventory
 
     def api_models(self, base_url, api_key="", protocol="chat_completions"):
         """Discover from an editor draft without saving it or changing active clients."""
         return list_api_models(ModelCatalogSettings(base_url, api_key, protocol))
 
     def configure_models(
-        self, selected_model, source="huggingface", directory=None, model_file=None
+        self, selected_model, source="huggingface", directory=None, model_file=None, device=None
     ):
         with self._commands:
             if self.active:
-                raise RuntimeError("请先停止转写，再切换模型或目录")
-            settings = ModelSettings(selected_model, source, directory, model_file)
+                raise RuntimeError("请先停止转写，再切换模型、推理设备或目录")
+            selected_device = (
+                device
+                if device is not None
+                else getattr(self.runtime, "device", self.models.settings.device)
+            )
+            settings = ModelSettings(selected_model, source, directory, model_file, selected_device)
             self.models.configure(settings)
             if hasattr(self.runtime, "configure_models"):
                 self.runtime.configure_models(settings)
-            return self.models.inventory()
+            inventory = self.model_inventory()
+            self._emit("models.configured", {"device": inventory["settings"]["device"]})
+            return inventory
 
     def download_models(self):
         with self._commands:
@@ -152,6 +168,7 @@ class DesktopService:
                 "state": self.state,
                 "mode": self.mode,
                 "active": self.active,
+                "audio_source": self.audio_source(),
                 "summary_busy": bool(self.worker and self.worker.busy),
                 "summary_state": self.summary_state,
                 "meeting": self._meeting(),
@@ -161,6 +178,51 @@ class DesktopService:
                 "translations": [asdict(item) for item in self.translations.values()],
                 "translation_state": self.translation_state,
             }
+
+    def audio_source(self):
+        return {
+            "source": self.source,
+            "requested_source": self.requested_source,
+            "switching": self.requested_source is not None,
+        }
+
+    def set_source(self, source, *, session_id=None):
+        """Change capture inputs in-place; completion arrives as a session.source event."""
+        InputSelection(source=source)
+        with self._commands, self._lock:
+            if session_id is not None and session_id != self.session_id:
+                raise RuntimeError("会议已切换，请重新选择音源")
+            if (
+                not self.active
+                or self.mode != "meeting"
+                or self.state != "recording"
+                or self._stop.is_set()
+                or self._runner is None
+            ):
+                raise RuntimeError("只能在会议录音过程中切换音源")
+            if self.requested_source is not None:
+                raise RuntimeError("正在切换音源，请等待完成")
+            if source == self.source:
+                return self.audio_source()
+            result = self._runner.set_source(source)
+            self.requested_source = source
+            current_session = self.session_id
+            self._emit("session.source", self.audio_source())
+
+            def completed(future):
+                with self._lock:
+                    if current_session != self.session_id:
+                        return
+                    error = ""
+                    try:
+                        self.source = future.result()
+                    except Exception as exc:  # noqa: BLE001 - isolate asynchronous device failures
+                        error = self._error(exc)
+                    self.requested_source = None
+                    self._emit("session.source", {**self.audio_source(), "error": error})
+
+            result.add_done_callback(completed)
+            return self.audio_source()
 
     def _meeting(self):
         if self.store is None:
@@ -175,6 +237,27 @@ class DesktopService:
 
     def list_meetings(self):
         return list_meetings(self.root / "data/meetings")
+
+    def note_call(self, action, **params):
+        methods = {
+            "groups": self.notes.groups,
+            "group.create": self.notes.create_group,
+            "group.rename": self.notes.rename_group,
+            "group.delete": self.notes.delete_group,
+            "meeting_group": self.notes.meeting_group,
+            "list": self.notes.list,
+            "create": self.notes.create,
+            "update": self.notes.update,
+            "delete": self.notes.delete,
+            "from_chat": self.notes.from_chat,
+        }
+        if action not in methods:
+            raise ValueError("不支持的笔记操作")
+        with self._commands:
+            result = methods[action](**params)
+            if action not in {"groups", "list"}:
+                self._emit("notes.changed", {"action": action})
+            return result
 
     def devices(self):
         from livecaptions_audio import list_devices
@@ -233,6 +316,7 @@ class DesktopService:
                 raise RuntimeError("应用正在退出")
             self._retire()
             self.mode, self.session_id = mode, uuid4().hex
+            self.source, self.requested_source = selection.source, None
             self._source_language = selection.language
             if self.translation_worker:
                 self.translation_worker.configure(
@@ -247,6 +331,7 @@ class DesktopService:
             self._cancel.clear()
             self.active = True
             self._state("preparing")
+            self._emit("session.source", self.audio_source())
             self._thread = threading.Thread(
                 target=self._run,
                 args=(selection, file),
@@ -414,7 +499,10 @@ class DesktopService:
 
         try:
             if file is None:
-                self.runtime.runner(selection).run(
+                runner = self.runtime.runner(selection)
+                with self._lock:
+                    self._runner = runner
+                runner.run(
                     selection.language,
                     self._stop,
                     self._cancel,
@@ -491,6 +579,8 @@ class DesktopService:
             finally:
                 self.runtime.on_progress = None
                 with self._lock:
+                    self._runner = None
+                    self.requested_source = None
                     self.active = False
                     self._state("error" if error else "ended")
                     self._emit("finished", None)

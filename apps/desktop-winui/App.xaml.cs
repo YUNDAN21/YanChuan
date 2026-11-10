@@ -9,7 +9,16 @@ public partial class App : Application
 {
     private Window? window;
     private FileStream? instanceLock;
-    public App() => InitializeComponent();
+    public App()
+    {
+        UnhandledException += (_, args) =>
+        {
+            // Opt-in local diagnostics: never include exception messages or payloads.
+            if (Environment.GetEnvironmentVariable("YANCHUAN_UI_DIAGNOSTIC") is { Length: > 0 } path)
+                File.AppendAllText(path, $"{DateTimeOffset.Now:O}\n{args.Exception.GetType().FullName}\n{args.Exception.StackTrace}\n");
+        };
+        InitializeComponent();
+    }
 
     protected override void OnLaunched(LaunchActivatedEventArgs args)
     {

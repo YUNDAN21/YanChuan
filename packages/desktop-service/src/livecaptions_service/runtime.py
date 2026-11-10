@@ -2,7 +2,7 @@
 
 import sys
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from livecaptions_audio.session import SessionRunner
@@ -32,11 +32,10 @@ class DesktopRuntime:
         root: Path,
         *,
         library_path=None,
-        device="vulkan",
+        device=None,
         on_progress: StartupObserver | None = None,
     ):
         self.root = root
-        self.device = device
         project_root = Path(__file__).resolve().parents[4]
         bundled = Path(sys.executable).resolve().parent.parent / "native/crispasr.dll"
         self.library_path = (
@@ -52,12 +51,16 @@ class DesktopRuntime:
         self._recognizer = self._vad = self._endpoint = None
         self.on_progress = on_progress
         self.model_settings = ModelSettings.load(root / "data/model-settings.json")
+        if device is not None:
+            self.model_settings = replace(self.model_settings, device=device)
+        self.device = self.model_settings.device
 
     def configure_models(self, settings):
         with self._model_lock:
             if settings != self.model_settings:
                 self.close()
                 self.model_settings = settings
+                self.device = settings.device
 
     def close(self):
         with self._model_lock:

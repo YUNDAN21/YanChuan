@@ -234,6 +234,9 @@ def main():
     parser.add_argument("--root", type=Path, default=Path(__file__).resolve().parents[1])
     parser.add_argument("--output", type=Path)
     parser.add_argument(
+        "--no-restore", action="store_true", help="Publish using already restored .NET dependencies"
+    )
+    parser.add_argument(
         "--resume",
         action="store_true",
         help="Resume an unarchived build directory with a runtime marker",
@@ -269,7 +272,7 @@ def main():
         [
             msbuild,
             str(root / "apps/desktop-winui/LiveCaptions.csproj"),
-            "/restore",
+            *([] if args.no_restore else ["/restore"]),
             "/t:Publish",
             "/p:Configuration=Release",
             "/p:Platform=x64",
@@ -304,7 +307,9 @@ def main():
         "本包不含识别模型、分段模型、API 密钥、私人 API 地址、会议记录、录音或本地配置。\n"
         "使用云端总结/问答/翻译时，请在“API 配置”中自行添加服务。\n"
         "配置与会议保存在 %LOCALAPPDATA%\\YanChuan\\data（已有安装沿用原 LiveCaptions 数据目录），默认模型下载到其 models 目录。\n"
-        "默认使用 Vulkan 独立显卡，需要支持 Vulkan 的显卡驱动；无需 CUDA Toolkit 或 Vulkan SDK。GPU 初始化失败会报告错误。\n",
+        "默认使用 Vulkan 独立显卡，需要支持 Vulkan 的显卡驱动；无需 CUDA Toolkit 或 Vulkan SDK。GPU 初始化失败会报告错误。\n"
+        "模型管理中可切换 CPU/GPU，切换前先停止转写；两种设备使用相同模型。\n"
+        "会议录音中可切换系统声音、麦克风或同时监听，继续保存至同一会议。\n",
         "utf-8",
     )
     print("Auditing release paths and scanning every file for local secrets...", flush=True)

@@ -113,7 +113,9 @@ def main():
     parser.add_argument(
         "--native-library", type=Path, help="Override the bundled native runtime DLL"
     )
-    parser.add_argument("--device", default="vulkan", help="vulkan, VulkanN or cpu")
+    parser.add_argument(
+        "--device", default=None, help="Override saved device: vulkan, VulkanN or cpu"
+    )
     parser.add_argument(
         "--verify-pcm", type=Path, help="Silent verification input; never opens devices"
     )

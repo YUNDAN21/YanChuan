@@ -215,12 +215,17 @@ def test_client_disconnection_stops_unlimited_capture_and_releases_device(monkey
             closed.append("terminated")
 
     class AdvancingEvent:
+        stopped = False
+
+        def is_set(self):
+            return self.stopped
+
         def wait(self, timeout):
             clock[0] += 10
             return False
 
         def set(self):
-            pass
+            self.stopped = True
 
     module = SimpleNamespace(PyAudio=PortAudio, paWASAPI=1, paFloat32=2)
     monkeypatch.setattr("livecaptions_audio.wasapi._pyaudio", lambda: module)

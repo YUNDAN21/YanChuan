@@ -27,6 +27,8 @@ class Router:
             return s.snapshot()
         if method == "devices.list":
             return s.devices()
+        if method.startswith("notes."):
+            return s.note_call(method.removeprefix("notes."), **params)
         if method == "session.start":
             return s.start(
                 params.get("mode", "meeting"),
@@ -34,6 +36,8 @@ class Router:
                 selection=InputSelection(**params.get("selection", {})),
                 file=params.get("file"),
             )
+        if method == "session.source":
+            return s.set_source(params["source"], session_id=params["session_id"])
         if method == "session.stop":
             s.stop(cancel=params.get("cancel", False))
         elif method == "meetings.list":
@@ -75,6 +79,7 @@ class Router:
                 params.get("source", "huggingface"),
                 params.get("directory"),
                 params.get("model_file"),
+                params.get("device"),
             )
         elif method == "models.download":
             return s.download_models()

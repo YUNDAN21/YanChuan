@@ -3,6 +3,7 @@
 from .config import MeetingSettings
 from .events import EventObserver, ServiceEvent
 from .models import ModelManager, ModelSettings
+from .notes import NotesService
 from .runtime import DesktopRuntime, InputSelection
 from .service import DesktopService
 
@@ -14,5 +15,6 @@ __all__ = [
     "MeetingSettings",
     "ModelManager",
     "ModelSettings",
+    "NotesService",
     "ServiceEvent",
 ]

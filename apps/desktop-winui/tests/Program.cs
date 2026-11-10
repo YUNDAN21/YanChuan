@@ -27,6 +27,7 @@ Check(Path.GetFullPath(brandingRoot).StartsWith(Path.GetFullPath(Path.GetTempPat
     "Temporary branding fixture escaped its workspace");
 Directory.Delete(brandingRoot, recursive: true);
 MarkdownChecks.Run(Path.Combine(Path.GetTempPath(), "livecaptions-markdown-checks"));
+await SourceSwitchChecks.RunAsync();
 var contextUsage = new ChatContextUsage("m", 4000, 4096, 8096, 8192, false);
 Check(contextUsage.Percent > 98 && contextUsage.Percent < 99, "Context ring ratio omitted output reserve");
 Check(contextUsage.Description.Contains("8,192") && contextUsage.Description.Contains("4,096"), "Context tooltip missing limit/reserve");
@@ -92,6 +93,42 @@ await using (var client = new BackendClient(root, temporary))
     Check(emptyUsage.MeetingId is null && emptyUsage.ContextTokens == 272000 && emptyUsage.TotalTokens > 4096,
         "Context estimate JSONL contract failed");
     Check(hello.Protocol == 1 && !hello.Snapshot.Active, "Handshake failed");
+    var cpuInventory = WireJson.Read<ModelInventory>(await client.CallAsync("models.configure",
+        new { selected_model = "qwen-0.6b", device = "cpu" }));
+    Check(cpuInventory.Settings.Device == "cpu", "CPU selection did not roundtrip");
+    var gpuInventory = WireJson.Read<ModelInventory>(await client.CallAsync("models.configure",
+        new { selected_model = "qwen-0.6b", device = "vulkan" }));
+    Check(gpuInventory.Settings.Device == "vulkan", "GPU selection did not roundtrip");
+    await client.CallAsync("models.configure", new { selected_model = "qwen-0.6b", device = "cpu" });
+    var notebook = new NotesViewModel(client);
+    await notebook.LoadAsync(null);
+    Check(notebook.Groups.Count == 0, "Fresh notebook should be empty");
+    await notebook.CreateNoteAsync();
+    Check(notebook.Group is not null && notebook.Note is not null, "Manual note/group creation failed");
+    await notebook.SaveAsync("中文笔记", "# 内容\n\n$x^2$\n\n$$\ny=1\n$$");
+    await notebook.RenameGroupAsync("自定义分组");
+    var reopenedNotebook = new NotesViewModel(client);
+    await reopenedNotebook.LoadAsync(null);
+    Check(reopenedNotebook.Group?.Title == "自定义分组"
+        && reopenedNotebook.Note?.Title == "中文笔记"
+        && reopenedNotebook.Note.Content.Contains("$x^2$"), "Notebook persistence/Unicode failed");
+    var sidebarGroups = await NotesViewModel.SidebarAsync(client);
+    Check(sidebarGroups.Count == 1 && sidebarGroups[0].Group.Title == "自定义分组"
+        && sidebarGroups[0].Notes.Single().Title == "中文笔记", "Sidebar group/note hierarchy missing");
+    var firstNoteId = reopenedNotebook.Note!.Id;
+    var firstGroupId = reopenedNotebook.Group!.Id;
+    await reopenedNotebook.CreateGroupAsync();
+    await reopenedNotebook.CreateNoteAsync();
+    var directNotebook = new NotesViewModel(client);
+    await directNotebook.LoadAsync(null, firstGroupId, firstNoteId);
+    Check(directNotebook.Group?.Id == firstGroupId && directNotebook.Note?.Id == firstNoteId,
+        "Sidebar navigation opened the wrong group or note");
+    await reopenedNotebook.DeleteGroupAsync();
+    await reopenedNotebook.LoadAsync(null, firstGroupId, firstNoteId);
+    await reopenedNotebook.DeleteNoteAsync();
+    Check(reopenedNotebook.Notes.Count == 0, "Note delete failed");
+    await reopenedNotebook.DeleteGroupAsync();
+    Check(reopenedNotebook.Groups.Count == 0, "Group delete failed");
     await client.CallAsync("chat.configure", new { model = "independent-model", reasoning_effort = "high" });
     await client.CallAsync("chat.configure", new { context_tokens = 16384 });
     var chatOptions = WireJson.Read<Configuration>(await client.CallAsync("configuration.get"));
@@ -126,6 +163,8 @@ await using (var client = new BackendClient(root, temporary))
 {
     var hello = await client.ConnectAsync();
     Check(hello.Configuration.Appearance == "dark" && !hello.Snapshot.Active, "Restart persistence failed");
+    Check(WireJson.Read<ModelInventory>(await client.CallAsync("models.list")).Settings.Device == "cpu",
+        "Inference device did not survive backend restart");
     Check(hello.Configuration.ChatModel == "independent-model"
         && hello.Configuration.ChatReasoningEffort == "high", "Chat options did not survive restart");
     var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

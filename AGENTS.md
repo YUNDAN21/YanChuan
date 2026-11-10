@@ -18,3 +18,4 @@
 - 正式识别使用 NativeQwenEngine / CrispASR 0.8.45 ABI 1 / GGML Vulkan，默认 Q8_0；核心仅接受显式路径与参数，应用层负责设备选择/下载/生命周期。模型切换与退出必须 close，GPU 失败不得静默转 CPU。
 - archive/pytorch/ 仅作本地旧源码与专属测试存档，不参与包发现、测试收集、依赖解析或公开发布；正常项目不新增 Torch/Transformers/qwen_asr/CUDA 依赖。原生发布使用 DLL 白名单、许可证及文件路径/大小清单，不计算文件哈希；模型/本地配置/密钥永不进入包。
 - 公开源码不包含 plan/、archive/、本地数据、模型、环境、日志和发布产物。上传前运行 scripts/check_publication.py；检查只输出文件路径、行号和问题类别，不输出密钥或敏感原文，不执行提交或上传。
+- 分组笔记存储 API 位于会议包 NoteStore，桌面服务 NotesService 负责按显式会议/请求 ID 摘录已完成回答；WinUI 只编辑和呈现。笔记保存在独立 data/notes.sqlite3，删除会议保留笔记，重复摘录不覆盖编辑，不改变识别或总结检查点。

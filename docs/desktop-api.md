@@ -25,6 +25,7 @@
 | `devices.list` | 设备 ID、名称、kind；不打开录音 |
 | `session.start` | `mode`: meeting / file / captions；`title`、`file`（仅 file）、`selection` |
 | `session.stop` | 可选 `cancel`；默认停止采集并确认尾句 |
+| `session.source` | `source`: system / microphone / both；`session_id`: 当前录音会话 ID；返回已确认音源、待切换音源和 switching |
 | `meetings.list` | 已保存会议元数据与目录 |
 | `meetings.open` | `directory`，只打开当前记录根目录下已有 SQLite 会议 |
 | `meetings.rename` | `title`，非空单行名称；返回更新后的元数据，同步磁盘导出并保留目录 |
@@ -50,11 +51,14 @@
 
 `selection` 包含 `source`（system / microphone / both）、`language`（auto / zh / ja / en）、可空的 `microphone_id` / `system_id`。设备采集使用有界 PCM；文件由核心逐段解码与识别。
 
+会议处于 recording 时可调用 `DesktopService.set_source(source, session_id=...)`，JSONL 对应 `session.source`。请求只排队，设备操作在采集线程进行；一次只允许一个待切换请求。新设备打开成功后发送确认事件，失败时返回原音源与错误，录音继续。加载、停止、文件导入或独立字幕状态拒绝此会议指令；会话 ID 防止过期请求影响下一场会议。切换保持同一会议、模型、识别流及时间轴，使用本次开始时选定的设备 ID。
+
 配置中的 API 项包含 id、name、base_url、model、api_key、protocol；protocol 为 chat_completions / responses / anthropic。模板项包含 id、name、prompt。旧单配置、模板、外观文件和会议 SQLite 直接兼容。
 
 ## 事件与生命周期
 
 - `state`：idle / preparing / recording / draining / summarizing / ended / error，附带 mode 和 active。同一时刻只有一个转写任务。
+- `session.source`：`source` 为实际音源，`requested_source` 为待切换音源（无请求时 null），`switching` 为切换状态，失败时附 `error`。按事件所属 session_id 应用，完成事件可能早于请求响应。快照中以 `audio_source` 提供同样的状态字段。
 - `progress`：核心启动阶段、状态及秒数；`file.progress`：已处理秒数与块数。
 - `meeting.loaded`：元数据、目录、完整转写和总结；`transcript`：新增确认记录。
 - `meeting.renamed`：更新后的会议元数据；`chat.updated`：`meeting_id` 与全部消息。聊天事件归属以 payload 的会议 ID 为准，外层 session_id 仍属于当前识别会话。
@@ -65,6 +69,32 @@
 - `translation.units`：新增语义短行与移除的临时行键；`translation`：按 key/source_text/target_language 关联的译文、ready/error/skipped 状态；`translation.reset`：语言或服务改变后的旧结果失效；`translation.status`：独立配置或网络状态。快照包含 translation_units、translations 与 translation_state。
 
 重新连接启动一个空闲后端，不自动录音。原始转写实时提交 SQLite；历史打开时重建 Markdown 导出。关闭或取消时保留已确认记录，总结失败可手动重试。
+
+## 分组笔记
+
+`livecaptions_meetings.NoteStore(path)` 为独立 SQLite 笔记 API，支持分组及笔记 CRUD。
+`livecaptions_service.NotesService(root)` 组合笔记库与会议来源查询，无界面、无模型请求。
+`DesktopService.note_call(action, **params)` 在服务控制锁下转发并推送 `notes.changed`（payload 为 action），JSONL 接口如下：
+
+| 方法 | 参数 | 返回 |
+| --- | --- | --- |
+| `notes.groups` | 无 | 分组列表，含 id/title/meeting_id/note_count |
+| `notes.group.create` | title | 新分组 |
+| `notes.group.rename` | group_id, title | 更新后的分组 |
+| `notes.group.delete` | group_id | true，级联删除组内笔记 |
+| `notes.meeting_group` | meeting_id | 获取或创建会议对应组 |
+| `notes.list` | group_id | 完整笔记列表 |
+| `notes.create` | group_id, title?, content? | 新笔记 |
+| `notes.update` | note_id, title, content | 更新后的笔记 |
+| `notes.delete` | note_id | true |
+| `notes.from_chat` | meeting_id, request_id | 将已完成的 assistant 回答保存为笔记 |
+
+笔记包含 id、group_id、title、content、source_request_id、created_at、updated_at。
+正文保持原始 Markdown；手动笔记 source_request_id 为 null。摘录只从指定会议的持久化问答读取，界面不上传重新拼装的回复，也不依赖当前打开会议。
+同一会议组内相同 request_id 只保留一份摘录，再次添加不会覆盖编辑。会议和笔记组分别命名；组创建时采用会议名称，之后可独立改名。
+
+数据独立保存于 `data/notes.sqlite3`，首次使用自动建表，不迁移或改动旧会议数据库。
+删除会议保留笔记；删除组只影响该组笔记。笔记不进入问答模型上下文，不影响转写、总结游标和会话互斥。
 
 ## 会议问答
 
@@ -99,6 +129,13 @@ SQLite `chat_message` 表按需创建，不改已有转写和总结。消息包�
 
 后台默认加载包内 `backend/native/crispasr.dll`，开发模式加载 `runtime/native/win-x64/crispasr.dll`。
 `--native-library` 可显式指定固定 ABI 运行库；`--device cpu` 显式使用 CPU，默认 Vulkan 独显。
+
+推理设备持久化于 `data/model-settings.json` 的 `device` 字段：`cpu`、`vulkan` 或显式 `VulkanN`。
+旧文件缺少该字段时使用 `vulkan`。`models.configure` 接受可选 `device`，不传则保留当前设备；
+`models.list` 的 `settings.device` 返回当前进程实际选择（包含命令行覆盖）。
+保存成功推送 `models.configured`，payload 为 `{ "device": "cpu" }` 等。
+活动转写期间拒绝切换；空闲切换关闭已有识别器并释放模型，下一会话重新加载，GPU 失败不回退。
+后台不指定 `--device` 时读取保存值；显式参数只覆盖当前进程，随后通过界面保存可持久化新的选择。
 
 ## 获取 API 模型列表
 
