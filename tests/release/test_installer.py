@@ -66,3 +66,4 @@ def test_installer_branding_and_old_install_upgrade_identity():
     assert 'CheckFileUnlocked "$INSTDIR\\LiveCaptions.exe"' in source
     assert 'Delete "$INSTDIR\\LiveCaptions.exe"' in source
     assert "RMDir /r" not in source
+    assert "CRCCheck off" in source

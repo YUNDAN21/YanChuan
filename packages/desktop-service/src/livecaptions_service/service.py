@@ -7,10 +7,13 @@ from pathlib import Path
 from uuid import uuid4
 
 from livecaptions_meetings import (
-    CHAT_SYSTEM_PROMPT,
+    AGENT_PROMPT,
+    COMPACTION_PROMPT,
     ApiProfile,
     ApiProfileLibrary,
     ChatCoordinator,
+    LocalAgentSettings,
+    MeetingAgent,
     MeetingStore,
     ModelCatalogSettings,
     PromptTemplate,
@@ -22,8 +25,11 @@ from livecaptions_meetings import (
     delete_meeting,
     list_api_models,
     list_meetings,
+    local_agent_catalog,
+    local_agent_version,
     meeting_for_deletion,
 )
+from livecaptions_meetings.chat import build_chat_messages, chat_question
 from livecaptions_translation import TranslationUnit, TranslationWorker
 
 from livecaptions_asr import SubtitleSplitter
@@ -64,7 +70,10 @@ class DesktopService:
         self.observer = observer or (lambda event: None)
         self.client_factory = client_factory or create_summary_client
         self.chat_client_factory = chat_client_factory or create_summary_client
-        self.chat = ChatCoordinator(lambda payload: self._emit("chat.updated", payload))
+        self.chat = ChatCoordinator(
+            lambda payload: self._emit("chat.updated", payload),
+            on_preview=lambda payload: self._emit("chat.preview", payload),
+        )
         self.store = self.worker = None
         self.history = CaptionHistory()
         self._lock = threading.RLock()
@@ -92,6 +101,7 @@ class DesktopService:
         self._translation_fingerprint = None
         self._source_language = "auto"
         self._translation_available = False
+        self._captions_watched = False
         self.models = model_manager_factory(
             self.root, lambda payload: self._emit("models.download", payload)
         )
@@ -106,6 +116,14 @@ class DesktopService:
     def api_models(self, base_url, api_key="", protocol="chat_completions"):
         """Discover from an editor draft without saving it or changing active clients."""
         return list_api_models(ModelCatalogSettings(base_url, api_key, protocol))
+
+    def agent_version(self, connection, executable=""):
+        return local_agent_version(LocalAgentSettings(connection, executable))
+
+    def agent_catalog(self, connection, executable="", include_models=True):
+        return local_agent_catalog(
+            LocalAgentSettings(connection, executable), include_models=include_models
+        )
 
     def configure_models(
         self, selected_model, source="huggingface", directory=None, model_file=None, device=None
@@ -157,6 +175,7 @@ class DesktopService:
             return {
                 **asdict(self.settings),
                 "appearance": self.appearance.mode,
+                "close_to_tray": self.appearance.close_to_tray,
                 "captions": asdict(self.caption_settings),
             }
 
@@ -233,6 +252,7 @@ class DesktopService:
             "entries": [asdict(item) for item in self.store.entries()],
             "summaries": [asdict(item) for item in self.store.summaries()],
             "summary_errors": self.store.summary_errors(),
+            "export_error": self.store.export_error,
         }
 
     def list_meetings(self):
@@ -325,7 +345,11 @@ class DesktopService:
             if mode != "captions":
                 self.store = MeetingStore.create(self.root / "data/meetings", title)
                 self._emit("meeting.loaded", self._meeting())
-            self.history.begin_session()
+            self.history = CaptionHistory()
+            self.translation_units.clear()
+            self.translations.clear()
+            self.translation_state = ""
+            self._emit("captions.reset", None)
             self._emit("captions", {"confirmed": [], "pending": None})
             self._stop.clear()
             self._cancel.clear()
@@ -371,7 +395,7 @@ class DesktopService:
                     "pending": asdict(pending) if pending else None,
                 },
             )
-            if self.mode == "captions":
+            if self.mode in {"captions", "meeting", "file"}:
                 self._translate_captions(self.history.confirmed[before:], pending)
 
     def _translation_update(self, result):
@@ -414,6 +438,10 @@ class DesktopService:
         if not settings.enabled or settings.display_mode == "original":
             self.translation_state = ""
             return
+        if profile is not None and profile.connection != "http":
+            self.translation_state = "请为字幕翻译选择 HTTP API 配置"
+            self._emit("translation.status", self.translation_state)
+            return
         try:
             if profile is None:
                 raise ValueError("翻译 API 配置不存在，请选择其他服务")
@@ -454,6 +482,7 @@ class DesktopService:
                 self.caption_settings.enabled
                 and self.caption_settings.display_mode != "original"
                 and self._translation_available
+                and (self.mode == "captions" or self._captions_watched)
             ):
                 for unit in units:
                     self.translation_worker.submit(unit)
@@ -467,15 +496,39 @@ class DesktopService:
             profile = next((p for p in self.settings.api_profiles if p.id == profile_id), None)
             if profile is None:
                 raise ValueError("翻译 API 配置不存在")
+            if profile.connection != "http":
+                raise ValueError("请为字幕翻译选择 HTTP API 配置")
             self.translator_factory(profile)
         with self._commands, self._lock:
             settings.save(self.caption_settings_path)
             self.caption_settings = settings
             self._sync_translation()
             self._emit("configuration", self.configuration())
-            if self.translation_worker and settings.enabled and settings.display_mode != "original":
+            if (
+                self.translation_worker
+                and settings.enabled
+                and settings.display_mode != "original"
+                and (self.mode == "captions" or self._captions_watched)
+            ):
                 for unit in list(self.translation_units.values())[-8:]:
                     self.translation_worker.submit(unit)
+
+    def watch_captions(self, enabled):
+        """Subscribe the floating view; meeting capture alone never requests translations."""
+        if not isinstance(enabled, bool):
+            raise TypeError("字幕窗口状态须为布尔值")
+        with self._commands, self._lock:
+            self._captions_watched = enabled
+            if not enabled and self.mode != "captions" and self.translation_worker:
+                self.translation_worker.configure(
+                    self.translation_worker.translator, self.caption_settings.target_language
+                )
+            if enabled:
+                self._sync_translation()
+                if self.translation_worker and self._translation_available:
+                    for unit in list(self.translation_units.values())[-8:]:
+                        self.translation_worker.submit(unit)
+            return enabled
 
     def _run(self, selection, file):
         trace = StartupTrace(
@@ -563,13 +616,13 @@ class DesktopService:
             try:
                 if self.store:
                     self.store.set_status("error" if error else "ended", ended=True)
-                    self.store.export()
+                    self._emit("summary.export", self.store.export_error)
                     # Explicitly disabled automatic mode must remain manual at the end.
                     if self.worker or self.settings.automatic_summary:
                         try:
                             worker = self._ensure_worker()
                             self._state("summarizing")
-                            worker.close(drain=True)
+                            worker.close(drain=self.settings.automatic_summary)
                             worker.wait()
                         except ValueError as exc:
                             self._summary_update("error", str(exc))
@@ -589,6 +642,9 @@ class DesktopService:
         if cancel:
             self._cancel.set()
         self._stop.set()
+        runner = self._runner
+        if runner is not None and (request_stop := getattr(runner, "request_stop", None)):
+            request_stop()
         if self.active:
             self._state("draining")
 
@@ -606,7 +662,7 @@ class DesktopService:
         with self._commands:
             self._retire()
             self.store = MeetingStore(directory)
-            self.store.export()
+            self.store.retry_export()
             self._emit("meeting.loaded", self._meeting())
             return self._meeting()
 
@@ -647,6 +703,7 @@ class DesktopService:
                 raise ValueError("请先打开会议")
             metadata = self.store.rename(title)
             self._emit("meeting.renamed", metadata)
+            self._emit("summary.export", self.store.export_error)
             return metadata
 
     def meeting_content(self, kind="all"):
@@ -655,36 +712,57 @@ class DesktopService:
                 raise ValueError("请先打开会议")
             return {"text": self.store.content(kind)}
 
+    def export_meeting(self):
+        """Retry disk exports without another summary request or checkpoint change."""
+        with self._commands:
+            if self.store is None:
+                raise ValueError("请先打开会议")
+            success = self.store.retry_export()
+            self._emit("summary.export", self.store.export_error)
+            return {"success": success, "error": self.store.export_error}
+
     def chat_messages(self):
         with self._commands:
             if self.store is None:
                 return {"meeting_id": None, "messages": []}
-            return {
-                "meeting_id": self.store.metadata["id"],
-                "messages": [asdict(m) for m in self.chat.list(self.store.directory)],
-            }
+            return self.chat.snapshot(self.store.directory, self.store.metadata["id"])
+
+    def _chat_client(self, prompt=AGENT_PROMPT):
+        selected = self.settings.chat_api_profile or self.settings.selected_api_profile
+        profile = next((p for p in self.settings.api_profiles if p.id == selected), None)
+        if profile is None:
+            raise ValueError("聊天 API 已被删除，请重新选择")
+        settings = replace(
+            replace(profile, model=self.settings.chat_model or profile.model).summary_settings(
+                prompt
+            ),
+            reasoning_effort=self.settings.chat_reasoning_effort,
+        )
+        return selected, self.chat_client_factory(settings)
 
     def send_chat(self, question):
         with self._commands:
             if self.store is None:
                 raise ValueError("请先打开或开始会议")
-            selected = self.settings.chat_api_profile or self.settings.selected_api_profile
-            profile = next((p for p in self.settings.api_profiles if p.id == selected), None)
-            if profile is None:
-                raise ValueError("聊天 API 已被删除，请重新选择")
-            settings = replace(
-                replace(profile, model=self.settings.chat_model or profile.model).summary_settings(
-                    CHAT_SYSTEM_PROMPT
-                ),
-                reasoning_effort=self.settings.chat_reasoning_effort,
+            selected, client = self._chat_client()
+            reference = self.store.reference_snapshot()
+            agent = MeetingAgent(
+                reference, client, context_tokens=self.settings.chat_context_tokens
             )
-            client = self.chat_client_factory(settings)
             result = self.chat.send(
                 self.store.directory,
-                self.store.context_snapshot(),
+                {
+                    "meeting_id": reference.meeting_id,
+                    "through_entry": reference.through_entry,
+                    "content": reference.overview(),
+                },
                 question,
                 client,
                 context_tokens=self.settings.chat_context_tokens,
+                answer_stream=agent.answer,
+                system_prompt=AGENT_PROMPT,
+                tool_tokens=2048,
+                input_usage=agent.input_usage,
             )
             if self.settings.chat_api_profile is None:
                 self._save_settings(replace(self.settings, chat_api_profile=selected))
@@ -693,14 +771,66 @@ class DesktopService:
     def chat_usage(self, question=""):
         with self._commands:
             meeting_id = self.store.metadata["id"] if self.store else None
-            context = self.store.context_snapshot()["content"] if self.store else ""
+            reference = self.store.reference_snapshot() if self.store else None
+            context = reference.overview() if reference else ""
             history = self.chat.list(self.store.directory) if self.store else []
+            memory = self.chat.context(self.store.directory) if self.store else None
+            usage = chat_context_usage(
+                context,
+                history,
+                question,
+                context_tokens=self.settings.chat_context_tokens,
+                memory=memory,
+                system_prompt=AGENT_PROMPT,
+                tool_tokens=2048,
+            )
+            if reference:
+                messages = build_chat_messages(
+                    context, history, chat_question(history, question), memory=memory
+                )
+                plan = MeetingAgent(
+                    reference, None, context_tokens=self.settings.chat_context_tokens
+                ).input_usage(messages)
+                if not plan["retrieval_mode"]:
+                    usage["meeting_tokens"] += plan["estimated_tokens"] - usage["estimated_tokens"]
+                usage.update(plan)
+                usage["total_tokens"] = (
+                    usage["estimated_tokens"] + usage["reserved_tokens"] + usage["tool_tokens"]
+                )
+                usage["over_budget"] = usage["total_tokens"] > usage["context_tokens"]
             return {
                 "meeting_id": meeting_id,
-                **chat_context_usage(
-                    context, history, question, context_tokens=self.settings.chat_context_tokens
-                ),
+                "source_tokens": reference.source_tokens if reference else 0,
+                "retrieval_mode": True,
+                **usage,
             }
+
+    def _require_chat_meeting(self, meeting_id):
+        if self.store is None or self.store.metadata["id"] != meeting_id:
+            raise ValueError("当前会议已切换，请重新打开上下文设置")
+
+    def compress_chat(self, meeting_id):
+        with self._commands:
+            self._require_chat_meeting(meeting_id)
+            selected, client = self._chat_client(COMPACTION_PROMPT)
+            result = self.chat.compress(
+                self.store.directory,
+                meeting_id,
+                client,
+                context_tokens=self.settings.chat_context_tokens,
+            )
+            if self.settings.chat_api_profile is None:
+                self._save_settings(replace(self.settings, chat_api_profile=selected))
+            return result
+
+    def configure_chat_context(self, meeting_id, *, reset=False):
+        with self._commands:
+            self._require_chat_meeting(meeting_id)
+            return self.chat.configure_context(
+                self.store.directory,
+                meeting_id,
+                reset=reset,
+            )
 
     def cancel_chat(self, request_id=None):
         with self._commands:
@@ -791,10 +921,18 @@ class DesktopService:
 
     def set_appearance(self, mode):
         with self._lock:
-            appearance = AppearanceSettings(mode)
+            appearance = replace(self.appearance, mode=mode)
             appearance.save(self.appearance_path)
             self.appearance = appearance
             self._emit("appearance", mode)
+
+    def configure_window(self, close_to_tray):
+        """Persist a presentation preference; never changes recording lifecycle."""
+        with self._lock:
+            appearance = replace(self.appearance, close_to_tray=close_to_tray)
+            appearance.save(self.appearance_path)
+            self.appearance = appearance
+            self._emit("configuration", self.configuration())
 
     def close(self):
         with self._commands:

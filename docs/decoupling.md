@@ -82,3 +82,17 @@ tail = segmenter.flush(current_end_seconds)
 笔记的分组、正文和摘录去重由会议包 `NoteStore` 维护，桌面服务 `NotesService` 负责按显式会议/请求 ID 读取已完成回答。JSONL 只路由，WinUI `NotesViewModel` 负责调用和选中项、`NotesDialog` 负责编辑呈现；核心识别不依赖笔记。笔记数据库独立于会议数据库，删除会议不删除笔记。
 
 录音中切换监听来源由采集包 `SwitchableCapture.set_source()` 提供可选异步能力，`SessionRunner` 转发给正在运行的采集器。WASAPI 所在线程负责设备事务、同一时间轴及有界音轨；桌面服务负责会议状态校验、请求归属和结果事件。JSONL 仅路由 `session.source`，WinUI 只发请求并投影确认状态；核心识别、语义分段及会议保存无需重建。
+
+非阻塞停止由采集包 `StoppableCapture.request_stop()` 提供，`SessionRunner` 在识别消费之外观察停止/取消信号；WASAPI 固定截止点并在设备线程关闭输入。会议包将 SQLite 总结提交与可重试文件导出分开，`MeetingStore.retry_export()` 不触发模型；服务和前端只转发、显示导出状态。AI 请求头和安全 HTTP 错误分类集中在会议包传输层，模型列表、总结、问答及外层翻译适配器共享实现。
+
+聊天压缩的 SQLite 状态、分批压缩和消息筛选位于会议包 `chat_context.py`，通过注入的 ChatClient 调用模型；`ChatCoordinator` 统一问答/压缩互斥、取消和会议归属。`MeetingReference` 提供不可变的原文快照及只读目录/搜索/分页 API，`MeetingAgent` 负责模型驱动的查阅循环、整场覆盖、请求预算和引用回查。桌面服务装配客户端与快照，JSONL 仅路由，WinUI 只显示上下文和活动状态。手动时间范围逻辑已移除，原文和摘要导出不改变。
+
+托盘的图标、菜单和窗口恢复由 WinUI `DesktopTray` 管理，关闭/隐藏与正常收尾由独立 `WindowLifetime` 协调；隐藏窗口不会调用后台停止接口。桌面服务仅持久化 `close_to_tray` 偏好，核心识别和采集库不依赖托盘或窗口状态。
+
+问答与压缩共用 `ChatCoordinator` 的任务生命周期，每个任务持有请求归属、取消信号和数据库连接。活动任务与仍未返回的后台任务分开登记，取消后可立即重试；旧任务只能释放自己的连接，不能更新新任务。启动线程失败也会保存失败状态并解除互斥。
+
+会议问答优先完整提交：`MeetingAgent` 根据会议原文、聊天历史、提示词和回答预留共同判断上下文预算；能够容纳时一次请求，不设置独立的短会议长度门槛。超过预算才使用搜索/分页读取/整场遍历，会议包统一返回同一策略的用量估计，WinUI 只显示。`ChatCoordinator` 提供可注入任务时限（默认 180 秒）与等待进度，超时解除互斥，迟到结果不更新记录；传输层记录协议、耗时和数值统计，不记录密钥、正文或完整返回体。
+
+完整提交的原文由 `MeetingAgent` 放在首条用户消息前部，聊天、压缩摘要、问题及会随录音变化的概览放在原文之后；不重复原文，不改变对话角色。新增转写保留已有片段前缀，客户端为渠道提供可复用输入。传输层统一读取 Responses、Chat Completions 与兼容渠道的缓存 token 字段，缺失记为未知，明确的零记为零。实际缓存行为及计费以渠道返回为准，不添加本地伪缓存或开启远程对话存储。
+
+模型目录与类型分派在 `models.py`，GGUF 查找/下载在 `native_assets.py`，端点模型与 ONNX 检查在 `endpoint_assets.py`；两个适配器都不反向导入管理层。AI HTTP opener、请求头及错误分类由 `http_transport.py` 统一提供，模型列表不依赖总结客户端的私有实现。WinUI 退出状态只由 `WindowLifetime` 管理，主窗口读取该状态，不另存关闭状态。

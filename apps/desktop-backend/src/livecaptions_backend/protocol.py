@@ -50,10 +50,16 @@ class Router:
             return s.delete_meeting(params["directory"])
         elif method == "meetings.content":
             return s.meeting_content(params.get("kind", "all"))
+        elif method == "meetings.export":
+            return s.export_meeting()
         elif method == "chat.list":
             return s.chat_messages()
         elif method == "chat.usage":
             return s.chat_usage(params.get("question", ""))
+        elif method == "chat.compress":
+            return s.compress_chat(params["meeting_id"])
+        elif method == "chat.context.reset":
+            return s.configure_chat_context(params["meeting_id"], reset=True)
         elif method == "chat.send":
             return s.send_chat(params["question"])
         elif method == "chat.cancel":
@@ -95,14 +101,26 @@ class Router:
                 params.get("api_key", ""),
                 params.get("protocol", "chat_completions"),
             )
+        elif method == "profiles.agent_version":
+            return s.agent_version(params["connection"], params.get("executable", ""))
+        elif method == "profiles.agent_catalog":
+            return s.agent_catalog(
+                params["connection"],
+                params.get("executable", ""),
+                params.get("include_models", True),
+            )
         elif method == "templates.save":
             s.set_templates(params["templates"], params["selected_id"])
         elif method == "templates.defaults":
             return s.default_templates()
         elif method == "appearance.set":
             s.set_appearance(params["mode"])
+        elif method == "window.configure":
+            s.configure_window(params["close_to_tray"])
         elif method == "captions.configure":
             s.configure_captions(params)
+        elif method == "captions.watch":
+            return s.watch_captions(params["enabled"])
         elif method == "subtitle.split":
             # Frontends supply actual glyph widths; semantic rules stay in the core library.
             widths = params.get("glyph_widths", {})

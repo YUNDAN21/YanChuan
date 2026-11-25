@@ -39,6 +39,21 @@ def test_release_manifest_and_secret_spanning_scan_blocks(tmp_path):
     assert "sha256" not in report["files"][0]
 
 
+def test_local_secrets_keep_keys_and_remote_urls_but_not_loopback_defaults(tmp_path):
+    settings = tmp_path / "data/meeting-settings.json"
+    settings.parent.mkdir()
+    settings.write_text(
+        '{"base_url": "http://127.0.0.1:1234/v1", "api_profiles": ['
+        '{"base_url": "http://localhost:8080/v1", "api_key": "fixture-key-0001"},'
+        '{"base_url": "https://llm.fixture.example/v1", "api_key": ""}]}',
+        "utf-8",
+    )
+    assert sorted(packaging.local_secrets(tmp_path)) == [
+        b"fixture-key-0001",
+        b"https://llm.fixture.example/v1",
+    ]
+
+
 @pytest.mark.parametrize(
     "name",
     [

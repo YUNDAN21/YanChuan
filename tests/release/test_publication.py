@@ -9,6 +9,14 @@ publication = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(publication)
 
 
+def test_gateway_key_is_reported_without_printing_value(tmp_path):
+    secret = "nb_" + "fixture" * 5
+    (tmp_path / "config.py").write_text(f"key = '{secret}'", "utf-8")
+    result = publication.scan_paths(tmp_path, ["config.py"])
+    assert any(item["category"] == "possible_api_token" for item in result["findings"])
+    assert secret not in json.dumps(result)
+
+
 def test_scan_reports_locations_without_exposing_secret_values(tmp_path):
     secret = "sk-" + "A" * 32
     private_url = "http://" + "192.168." + "12.34:8317/v1"

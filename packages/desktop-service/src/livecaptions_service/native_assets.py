@@ -1,6 +1,5 @@
 """Pinned native Qwen catalogue and resumable downloads."""
 
-import hashlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -15,7 +14,6 @@ class NativeAsset:
     revision: str
     filename: str
     size: int
-    sha256: str
     runtime: str = "crispasr-0.8.45-lc1"
     precision: str = "q8_0"
     source: str = "huggingface"
@@ -34,7 +32,6 @@ NATIVE_CATALOG = (
         "58bd3202f835f46b24b17142cb503b0860c737a5",
         "qwen3-asr-0.6b-q8_0.gguf",
         1006809760,
-        "f547589d5ca582e093b2d3312ad9ff13b609b43d413f972c0e92b823dde70a00",
     ),
     NativeAsset(
         "qwen-1.7b",
@@ -43,22 +40,20 @@ NATIVE_CATALOG = (
         "674df5d44b50a63e7102a18895ed20e3f91de301",
         "qwen3-asr-1.7b-q8_0.gguf",
         2506723200,
-        "9851ab996591a2d0cb0efb216002764b509c86bd40c95e613d7b65b8e69c8a6e",
     ),
 )
 
 
-def verified_file(path, size, sha256):
+def verified_file(path, size, validate):
     if not path.is_file() or path.stat().st_size != size:
         return False
-    with path.open("rb") as source:
-        return hashlib.file_digest(source, "sha256").hexdigest() == sha256
+    return validate(path)
 
 
-def download_verified(url, destination, size, sha256, progress):
-    """Resume a public file; validate HTTP ranges, byte count and digest before publication."""
+def download_verified(url, destination, size, progress, *, validate):
+    """Resume a public file; check ranges, byte count and format before publication."""
     destination = Path(destination)
-    if verified_file(destination, size, sha256):
+    if verified_file(destination, size, validate):
         progress({"current": size, "total": size, "message": "模型已就绪，跳过下载"})
         return destination
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -98,7 +93,7 @@ def download_verified(url, destination, size, sha256, progress):
                     output.write(chunk)
                     current += len(chunk)
                     progress({"current": current, "total": size, "message": destination.name})
-    if not verified_file(partial, size, sha256):
+    if not verified_file(partial, size, validate):
         # A short transfer remains resumable. A complete but corrupt one must restart.
         if partial.stat().st_size == size:
             partial.replace(partial.with_suffix(".invalid"))
@@ -110,13 +105,6 @@ def download_verified(url, destination, size, sha256, progress):
 
 def locate_native(asset, storage):
     """Locate only structurally compatible GGUF; old safetensors never count as ready."""
-    from livecaptions_asr import ASRError
-    from livecaptions_asr.engines.gguf_model import inspect_qwen_gguf
-
-    from .models import _hash_file, local_endpoint_asset
-
-    if asset.kind != "asr":
-        return local_endpoint_asset(asset, storage)
     storage = Path(storage)
     preferred = (
         [storage]
@@ -128,31 +116,19 @@ def locate_native(asset, storage):
         if storage.is_file()
         else sorted(storage.glob("*.gguf")) + sorted((storage / "native").glob("*.gguf"))
     )
-    expected_size = "1.7B" if asset.id == "qwen-1.7b" else "0.6B"
     for path in dict.fromkeys([*preferred, *others]):
         if not path.is_file():
             continue
         if path.name == asset.filename:
             stat = path.stat()
-            if (
-                stat.st_size != asset.size
-                or _hash_file(str(path), stat.st_size, stat.st_mtime_ns) != asset.sha256
-            ):
+            if stat.st_size != asset.size:
                 continue
-        try:
-            info = inspect_qwen_gguf(path)
-        except ASRError:
-            continue
-        if info["model_size"] == expected_size and info["precision"] == asset.precision:
+        if compatible_native(asset, path):
             return path
     return None
 
 
 def download_native_asset(asset, storage, source, progress):
-    from .models import download_endpoint_asset
-
-    if asset.kind != "asr":
-        return download_endpoint_asset(asset, storage, "huggingface", progress)
     if source != "huggingface":
         raise ValueError("原生 GGUF 当前仅提供已验证的 Hugging Face 源")
     existing = locate_native(asset, storage)
@@ -162,5 +138,22 @@ def download_native_asset(asset, storage, source, progress):
     if Path(storage).suffix.lower() == ".gguf":
         raise ValueError("所选 GGUF 不兼容或不存在；请重新选择文件或清空文件选择后下载。")
     return download_verified(
-        asset.url, Path(storage) / "native" / asset.filename, asset.size, asset.sha256, progress
+        asset.url,
+        Path(storage) / "native" / asset.filename,
+        asset.size,
+        progress,
+        validate=lambda path: compatible_native(asset, path),
     )
+
+
+def compatible_native(asset, path):
+    """Inspect format and architecture even when a temporary file has a different name."""
+    from livecaptions_asr import ASRError
+    from livecaptions_asr.engines.gguf_model import inspect_qwen_gguf
+
+    try:
+        info = inspect_qwen_gguf(path)
+    except ASRError:
+        return False
+    expected = "1.7B" if asset.id == "qwen-1.7b" else "0.6B"
+    return info["model_size"] == expected and info["precision"] == asset.precision

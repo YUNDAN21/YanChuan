@@ -95,6 +95,7 @@ class WasapiRecording:
         self._source_tracks = dict(zip(("microphone", "system"), self._tracks, strict=True))
         self._blocks_lock = threading.Lock()
         self._source_lock = threading.Lock()
+        self._stop_at = None
         self._source_requests: Queue[tuple[str, Future[str]]] = Queue()
         self.thread = threading.Thread(target=self._run, name="wasapi-capture", daemon=True)
 
@@ -126,8 +127,15 @@ class WasapiRecording:
             "saved_audio": self.archive is not None,
         }
 
+    def request_stop(self):
+        """Freeze the audio cutoff now; device teardown stays on the owner thread."""
+        with self._blocks_lock:
+            if self._stop_at is None:
+                self._stop_at = perf_counter()
+            self.stop_event.set()
+
     def stop(self) -> AudioSink | None:
-        self.stop_event.set()
+        self.request_stop()
         if not self.done_event.wait(12):
             raise ASRError("capture_unavailable", "音频设备结束超时。")
         if self.error:
@@ -179,7 +187,11 @@ class WasapiRecording:
                 offset = max(0, perf_counter() - self.started - len(samples) / rate)
                 with self._blocks_lock:
                     since = entry["since"]
-                    if since is not None and (self.limit is None or offset < self.limit):
+                    if (
+                        not self.stop_event.is_set()
+                        and since is not None
+                        and (self.limit is None or offset < self.limit)
+                    ):
                         trim = max(0, int(np.ceil((since - offset) * rate)))
                         if trim < len(samples):
                             self._append_block_locked(
@@ -223,7 +235,11 @@ class WasapiRecording:
             available = _devices(pa, module)
             for kind in ("microphone", "system"):
                 if kind in wanted and kind not in streams:
+                    if self.stop_event.is_set():
+                        raise RuntimeError("录音正在结束")
                     added[kind] = self._open_input(pa, module, available, kind)
+                    if self.stop_event.is_set():
+                        raise RuntimeError("录音正在结束")
                     added[kind]["stream"].start_stream()
             if self.stop_event.is_set():
                 raise RuntimeError("录音正在结束")
@@ -263,16 +279,22 @@ class WasapiRecording:
         streams = {}
         pa = None
         try:
+            if self.stop_event.is_set():
+                return
             module = _pyaudio()
             pa = module.PyAudio()
             available = _devices(pa, module)
             for kind in ("microphone", "system"):
+                if self.stop_event.is_set():
+                    break
                 if self.source not in {kind, "both"}:
                     continue
                 streams[kind] = self._open_input(pa, module, available, kind)
             self.started = perf_counter()
             self.last_heartbeat = self.started
             for entry in streams.values():
+                if self.stop_event.is_set():
+                    break
                 entry["since"] = 0.0
                 entry["stream"].start_stream()
             self.ready_event.set()
@@ -288,7 +310,8 @@ class WasapiRecording:
                 if perf_counter() - self.last_heartbeat > self.idle_seconds:
                     self.warnings.append("客户端失联，录音已自动停止。")
                     break
-            self.duration = perf_counter() - self.started
+            stopped_at = self._stop_at if self._stop_at is not None else perf_counter()
+            self.duration = max(0, stopped_at - self.started)
             if self.limit is not None:
                 self.duration = min(self.limit, self.duration)
             self.stop_event.set()

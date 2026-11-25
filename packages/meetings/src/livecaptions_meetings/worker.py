@@ -119,6 +119,7 @@ class SummaryWorker:
                         summary = self.store.save_summary(batch, text, client.model)
                         self.last_error = ""
                         self._notify("summary", summary)
+                        self._notify("export", self.store.export_error)
                 except Exception as exc:  # noqa: BLE001 - injected client errors must be redacted
                     # Do not log upstream exception bodies or credentials.
                     self.last_error = str(exc).replace(

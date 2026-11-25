@@ -132,6 +132,8 @@ def test_real_http_wire_auth_input_and_output_for_each_protocol(protocol, endpoi
         )
         assert text == "第一条 结论。 [redacted]"
         path, headers, body = received[0]
+        assert headers["User-Agent"] == "YanChuan/0.2.0"
+        assert headers["Accept"] == "application/json"
         assert path == "/gateway/v1" + endpoint
         assert body["model"] == "chosen-model" and body["stream"] is False
         if protocol == "responses":

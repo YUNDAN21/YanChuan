@@ -247,6 +247,9 @@ def test_summary_client_switch_keeps_inflight_snapshot(tmp_path):
     assert service.store.summaries()[0].model == "old"
     service.stop()
     assert service.wait(5)
+    assert len(service.store.summaries()) == 1
+    assert service.summarize_now()
+    wait(lambda: len(service.store.summaries()) == 2)
     assert service.store.summaries()[-1].model == "test"
     service.close()
 

@@ -31,6 +31,7 @@ public sealed class MarkdownView : UserControl
     private readonly Dictionary<InlineUIContainer, string> formulas = [];
     private readonly List<(Image Image, double Width, double Height)> displayImages = [];
     private readonly SelectionAutoScroll selectionScroll;
+    private Brush? timestampBrush;
     public static readonly DependencyProperty TextProperty = DependencyProperty.Register(
         nameof(Text), typeof(string), typeof(MarkdownView), new PropertyMetadata("", Changed));
     public string Text { get => (string)GetValue(TextProperty); set => SetValue(TextProperty, value); }
@@ -118,6 +119,7 @@ public sealed class MarkdownView : UserControl
     private void Render()
     {
         document.Blocks.Clear();
+        timestampBrush = null;
         formulas.Clear();
         displayImages.Clear();
         AddBlocks(MarkdownDocument.Parse(Text), document);
@@ -274,7 +276,7 @@ public sealed class MarkdownView : UserControl
                     AddFormula(target, math.Content.ToString(), false);
                     break;
                 case LiteralInline literal:
-                    target.Add(new Run { Text = literal.Content.ToString() });
+                    AddLiteral(target, literal.Content.ToString());
                     break;
                 case CodeInline code:
                     target.Add(new Run { Text = code.Content, FontFamily = new FontFamily("Cascadia Mono, Consolas") });
@@ -315,6 +317,30 @@ public sealed class MarkdownView : UserControl
                     break;
             }
         }
+    }
+
+    // Meeting timestamps (hh:mm:ss or mm:ss) stay plain text runs, so selection and copying are
+    // unchanged; only their colour marks them as references into the transcript.
+    private static readonly System.Text.RegularExpressions.Regex Timestamp =
+        new(@"(?<![\d:])(?:\d{1,2}:)?\d{1,2}:\d{2}(?![\d:])", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    private void AddLiteral(InlineCollection target, string text)
+    {
+        var last = 0;
+        foreach (System.Text.RegularExpressions.Match match in Timestamp.Matches(text))
+        {
+            if (match.Index > last) target.Add(new Run { Text = text[last..match.Index] });
+            target.Add(new Run { Text = match.Value, Foreground = timestampBrush ??= TimestampBrush() });
+            last = match.Index + match.Length;
+        }
+        if (last < text.Length) target.Add(new Run { Text = text[last..] });
+    }
+
+    private Brush TimestampBrush()
+    {
+        var settings = new Windows.UI.ViewManagement.UISettings();
+        return new SolidColorBrush(settings.GetColorValue(ActualTheme == ElementTheme.Dark
+            ? Windows.UI.ViewManagement.UIColorType.AccentLight2 : Windows.UI.ViewManagement.UIColorType.AccentDark1));
     }
 
     private void AddFormula(InlineCollection target, string latex, bool display)

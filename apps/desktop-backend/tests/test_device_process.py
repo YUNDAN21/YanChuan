@@ -31,9 +31,9 @@ def test_saved_device_survives_real_process_restart_and_cli_override(tmp_path):
     assert next(m for m in messages if m.get("id") == 1)["result"]["settings"]["device"] == "cpu"
     assert any(m.get("name") == "models.configured" for m in messages)
     messages = run([("models.list", {}), ("shutdown", {})])
-    assert messages[0]["result"]["settings"]["device"] == "cpu"
+    assert next(m for m in messages if m.get("id") == 1)["result"]["settings"]["device"] == "cpu"
     messages = run([("models.list", {}), ("shutdown", {})], "--device", "vulkan")
-    assert messages[0]["result"]["settings"]["device"] == "vulkan"
+    assert next(m for m in messages if m.get("id") == 1)["result"]["settings"]["device"] == "vulkan"
     # Session override alone never replaces the saved preference.
     messages = run([("models.list", {}), ("shutdown", {})])
-    assert messages[0]["result"]["settings"]["device"] == "cpu"
+    assert next(m for m in messages if m.get("id") == 1)["result"]["settings"]["device"] == "cpu"

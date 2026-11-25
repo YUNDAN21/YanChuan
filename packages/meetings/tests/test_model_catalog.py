@@ -16,7 +16,9 @@ def server(replies):
             pass
 
         def do_GET(self):
-            received.append((self.path, {key.lower(): value for key, value in self.headers.items()}))
+            received.append(
+                (self.path, {key.lower(): value for key, value in self.headers.items()})
+            )
             status, payload = replies[min(len(received) - 1, len(replies) - 1)]
             body = payload if isinstance(payload, bytes) else json.dumps(payload).encode()
             self.send_response(status)
@@ -51,6 +53,8 @@ def test_discovery_uses_draft_without_model_and_correct_auth(protocol, suffix):
         assert "draft-secret" not in repr(settings)
         assert list_api_models(settings) == ["a-model", "z-model"]
         path, headers = calls[0]
+        assert headers["user-agent"] == "YanChuan/0.2.0"
+        assert headers["accept"] == "application/json"
         assert path.split("?")[0] == "/gateway/v1/models"
         if protocol == "anthropic":
             assert headers["x-api-key"] == "draft-secret"

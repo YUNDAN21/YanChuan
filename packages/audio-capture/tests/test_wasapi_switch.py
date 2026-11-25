@@ -143,6 +143,55 @@ def test_stop_while_device_opens_settles_every_request(devices):
     assert all(s.closed for s in devices.streams)
 
 
+def test_stop_signal_freezes_duration_and_rejects_late_callbacks(devices):
+    capture = WasapiRecording("system", None, None, None)
+    capture.start()
+    devices.clock = 100.1
+    devices.latest("system").emit(0.8)
+    capture.request_stop()
+    devices.clock = 110
+    devices.latest("system").emit(1)
+    capture.request_stop()
+    capture.stop()
+    assert capture.duration == pytest.approx(0.1)
+    assert sum(len(track) for track in capture._tracks) == 1
+    assert all(s.closed for s in devices.streams)
+
+
+def test_stop_before_start_never_opens_devices(devices):
+    capture = WasapiRecording("both", None, None, None)
+    capture.request_stop()
+    capture.start()
+    capture.stop()
+    assert not devices.streams
+
+
+def test_stop_during_input_open_does_not_start_new_input(devices, monkeypatch):
+    capture = WasapiRecording("system", None, None, None)
+    capture.start()
+    entered, release = threading.Event(), threading.Event()
+    original_open = devices.open
+
+    def slow_open(**params):
+        stream = original_open(**params)
+        entered.set()
+        assert release.wait(3)
+        return stream
+
+    monkeypatch.setattr(devices, "open", slow_open)
+    request = capture.set_source("both")
+    try:
+        assert entered.wait(2)
+        capture.request_stop()
+    finally:
+        release.set()
+        capture.stop()
+    with pytest.raises(Exception, match="结束"):
+        request.result(1)
+    assert ("start", "microphone") not in [(op[0], op[1]) for op in devices.operations]
+    assert all(s.closed for s in devices.streams)
+
+
 def test_new_callback_does_not_rewrite_before_switch_and_disabled_buffers_expire(devices):
     capture = WasapiRecording("system", None, None, None, buffer_seconds=2)
     capture.start()

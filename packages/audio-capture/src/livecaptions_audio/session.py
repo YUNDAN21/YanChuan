@@ -25,6 +25,13 @@ class SwitchableCapture(Protocol):
     def set_source(self, source: str) -> Future[str]: ...
 
 
+@runtime_checkable
+class StoppableCapture(Protocol):
+    """Nonblocking stop signal; stop() subsequently waits for capture teardown."""
+
+    def request_stop(self): ...
+
+
 class SessionRunner:
     """One consumer per PCM stream; capture opens only after model preparation."""
 
@@ -36,6 +43,12 @@ class SessionRunner:
         self.capture_factory = capture_factory
         self._capture: Capture | None = None
         self._capture_lock = threading.Lock()
+
+    def request_stop(self):
+        """Signal the device independently of the recognition consumer."""
+        with self._capture_lock:
+            if isinstance(self._capture, StoppableCapture):
+                self._capture.request_stop()
 
     def set_source(self, source: str) -> Future[str]:
         """Queue an input change without waiting for inference or reopening the stream."""
@@ -59,6 +72,8 @@ class SessionRunner:
         timer = StartupTimer(on_progress)
         capture = stream = segmenter = None
         capture_stopped = False
+        control_done = threading.Event()
+        control = None
         try:
             on_state("preparing")
             with timer.phase("segmentation_prepare"):
@@ -77,11 +92,22 @@ class SessionRunner:
             if stop.is_set() or cancel.is_set():
                 capture = None
                 return
-            with timer.phase("audio_start"):
-                capture.start()
             with self._capture_lock:
                 self._capture = capture
-            on_state("recording")
+
+            def watch_stop():
+                while not control_done.is_set():
+                    if stop.is_set() or cancel.is_set():
+                        self.request_stop()
+                        return
+                    control_done.wait(0.02)
+
+            control = threading.Thread(target=watch_stop, name="capture-control", daemon=True)
+            control.start()
+            with timer.phase("audio_start"):
+                capture.start()
+            if not stop.is_set() and not cancel.is_set():
+                on_state("recording")
             cursor = 0.0
             while True:
                 capture.heartbeat()
@@ -114,6 +140,9 @@ class SessionRunner:
                     return
                 stop.wait(0.05)
         finally:
+            control_done.set()
+            if control is not None:
+                control.join()
             with self._capture_lock:
                 self._capture = None
             # Cancellation and failures stop devices without additional inference.

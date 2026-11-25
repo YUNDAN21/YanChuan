@@ -1,4 +1,3 @@
-import hashlib
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -45,8 +44,8 @@ def test_download_resume_validates_response_and_never_replaces_good_target(tmp_p
             f"http://127.0.0.1:{server.server_port}/model",
             target,
             len(payload),
-            hashlib.sha256(payload).hexdigest(),
             lambda update: None,
+            validate=lambda path: path.read_bytes() == payload,
         )
         if mode in {"wrong-range", "corrupt"}:
             with pytest.raises(ValueError):
@@ -85,7 +84,6 @@ def test_cancel_callback_preserves_partial_then_resumes_without_publishing(tmp_p
     threading.Thread(target=server.serve_forever, daemon=True).start()
     target = tmp_path / "resume.gguf"
     target.write_bytes(b"existing")
-    checksum = hashlib.sha256(payload).hexdigest()
 
     def cancel(update):
         raise InterruptedError("cancelled")
@@ -93,10 +91,22 @@ def test_cancel_callback_preserves_partial_then_resumes_without_publishing(tmp_p
     try:
         url = f"http://127.0.0.1:{server.server_port}/model"
         with pytest.raises(InterruptedError):
-            download_verified(url, target, len(payload), checksum, cancel)
+            download_verified(
+                url,
+                target,
+                len(payload),
+                cancel,
+                validate=lambda path: path.read_bytes() == payload,
+            )
         assert target.read_bytes() == b"existing"
         assert target.with_suffix(".gguf.download").stat().st_size == 256 * 1024
-        download_verified(url, target, len(payload), checksum, lambda update: None)
+        download_verified(
+            url,
+            target,
+            len(payload),
+            lambda update: None,
+            validate=lambda path: path.read_bytes() == payload,
+        )
         assert target.read_bytes() == payload
         assert requests == [0, 256 * 1024]
     finally:

@@ -1,7 +1,7 @@
-import hashlib
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 
 import pytest
 from livecaptions_service import DesktopRuntime, DesktopService, ModelManager, ModelSettings
@@ -40,8 +40,15 @@ def test_empty_inventory_legacy_cache_and_model_selection(tmp_path):
     manager.close()
 
 
-def test_endpoint_download_progress_hash_failure_and_retry(tmp_path):
+def test_endpoint_download_size_schema_failure_and_retry(tmp_path, monkeypatch):
+    from livecaptions_service import endpoint_assets
+
     payload = b"synthetic-model-fixture" * 100
+    monkeypatch.setattr(
+        endpoint_assets,
+        "_endpoint_compatible",
+        lambda filename, *args: Path(filename).read_bytes() == payload,
+    )
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -61,7 +68,12 @@ def test_endpoint_download_progress_hash_failure_and_retry(tmp_path):
     try:
         url = f"http://127.0.0.1:{server.server_port}/fixture"
         invalid = ModelAsset(
-            "fixture", "fixture", "segmentation", filename="fixture.onnx", url=url, sha256="wrong"
+            "fixture",
+            "fixture",
+            "segmentation",
+            filename="fixture.onnx",
+            url=url,
+            size=len(payload) + 1,
         )
         with pytest.raises(ValueError, match="校验"):
             download_asset(invalid, tmp_path, "modelscope", lambda value: None)
@@ -72,7 +84,7 @@ def test_endpoint_download_progress_hash_failure_and_retry(tmp_path):
             "segmentation",
             filename="fixture.onnx",
             url=url,
-            sha256=hashlib.sha256(payload).hexdigest(),
+            size=len(payload),
         )
         progress = []
         assert download_asset(valid, tmp_path, "modelscope", progress.append) == target

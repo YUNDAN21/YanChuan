@@ -1,11 +1,17 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text.Json;
 using LiveCaptions.Desktop.Models;
 using LiveCaptions.Desktop.ViewModels;
 using LiveCaptions.Desktop.Views;
+using Microsoft.UI.Composition.SystemBackdrops;
 using Microsoft.UI.Windowing;
 using Microsoft.UI.Xaml;
+using Microsoft.UI.Xaml.Automation;
 using Microsoft.UI.Xaml.Controls;
+using Microsoft.UI.Xaml.Controls.Primitives;
+using Microsoft.UI.Xaml.Data;
+using Microsoft.UI.Xaml.Input;
 using Microsoft.UI.Xaml.Media;
 using Windows.Graphics;
 using Windows.Storage.Pickers;
@@ -18,25 +24,40 @@ namespace LiveCaptions.Desktop;
 public sealed partial class MainWindow : Window
 {
     public DesktopViewModel Model { get; }
-    private readonly string root;
+    private readonly string root, themeCache;
     private readonly string? verifyFile, reportPath;
     private readonly bool verifyCaptions;
     private CaptionWindow? captions;
     private string? microphoneId, systemId;
-    private bool updating, closing, closed;
+    private bool updating, updatingDevices;
+    private bool closing => lifetime.Exiting;
+    private bool closed => lifetime.Finished;
     private bool transcriptFollowing = true, summaryFollowing = true;
     private ScrollViewer? transcriptScroll, summaryScroll;
     private ScrollViewer? chatScroll;
-    private bool chatOpen, chatFollowing = true;
+    private string view = "meeting";
+    private bool chatOpen => view == "chat";
+    private bool settingsOpen => view is "settings" or "profiles";
+    private bool chatFollowing = true;
     private readonly DispatcherTimer copyClock = new() { Interval = TimeSpan.FromSeconds(3) };
     private readonly DispatcherTimer startupClock = new() { Interval = TimeSpan.FromSeconds(1) };
+    private readonly DispatcherTimer recordClock = new() { Interval = TimeSpan.FromSeconds(1) };
     private DateTime progressStarted;
     private string progressStatus = "";
+    private DateTimeOffset? recordingSince;
     private readonly DispatcherTimer contextClock = new() { Interval = TimeSpan.FromMilliseconds(350) };
     private long contextRevision;
     private bool chatSending, contextRequestRunning, contextDirty, changingTheme, deletingMeeting;
     private long notesRevision;
     private bool notesDialogOpen;
+    private bool renaming, committingRename, startDanger, rowsQueued;
+    // Title for the next new meeting, named before recording starts. Opening history never changes it.
+    private string pendingTitle = "";
+    private string meetingSignature = "", shownError = "";
+    private readonly CollectionViewSource meetingGroups;
+    private readonly Services.WindowLifetime lifetime = new();
+    private readonly Services.DesktopTray tray;
+    private bool forceExit;
     private sealed record SidebarNote(string GroupId, string? NoteId, string Title)
     {
         public override string ToString() => Title;
@@ -48,24 +69,41 @@ public sealed partial class MainWindow : Window
         Model = model; this.root = root; this.verifyFile = verifyFile; this.reportPath = reportPath;
         this.verifyCaptions = verifyCaptions;
         InitializeComponent(); Root.DataContext = model;
+        meetingGroups = (CollectionViewSource)Root.Resources["MeetingGroups"];
+        ExtendsContentIntoTitleBar = true;
+        SetTitleBar(AppTitleBar);
+        if (AppWindowTitleBar.IsCustomizationSupported())
+            AppWindow.TitleBar.PreferredHeightOption = TitleBarHeightOption.Tall;
+        if (MicaController.IsSupported()) SystemBackdrop = new MicaBackdrop();
+        else BackdropFallback.Visibility = Visibility.Visible;
+        tray = new Services.DesktopTray(RestoreFromTray, ExitFromTray, () => Root.ActualTheme);
+        Closed += (_, _) => tray.Dispose();
         contextClock.Tick += async (_, _) =>
         {
             contextClock.Stop();
             await RefreshContextUsage();
         };
         Services.AppIcons.Apply(this);
-        copyClock.Tick += (_, _) => { copyClock.Stop(); CopyNotice.Text = ""; };
+        copyClock.Tick += (_, _) => { copyClock.Stop(); CopyToast.Visibility = Visibility.Collapsed; CopyNotice.Text = ""; };
+        recordClock.Tick += (_, _) => UpdateRecordingClock();
         model.Post = action => DispatcherQueue.TryEnqueue(() => action());
         model.Changed += Refresh;
+        model.Meetings.CollectionChanged += (_, _) => ScheduleMeetingRows();
         AppWindow.Resize(new SizeInt32(1500, 1000));
         if (AppWindow.Presenter is OverlappedPresenter presenter) presenter.PreferredMinimumWidth = 1040;
         AppWindow.Closing += Closing;
         Root.Loaded += Loaded;
-        startupClock.Tick += (_, _) =>
-        {
-            if (Model.State == "preparing")
-                Title = $"言川 · {progressStatus} · {(DateTime.Now - progressStarted).TotalSeconds:F0}s";
-        };
+        startupClock.Tick += (_, _) => { if (Model.State == "preparing") UpdateWindowTitle(); };
+        var version = typeof(App).Assembly.GetName().Version;
+        VersionText.Text = version is null ? "言川" : $"言川 {version.ToString(3)}";
+        SettingsNav.SelectedIndex = 0;
+        themeCache = Services.ApplicationPaths.ThemeCachePath(root);
+        // Paint the first frame in the last known theme; the backend's configuration replaces it on connect.
+        if (!Model.Connected && Services.ThemeCache.Read(themeCache) is { } cachedTheme)
+            Model.Configuration.Appearance = cachedTheme;
+        ApplyTheme();
+        RebuildMeetingRows(force: true);
+        UpdateHeader(); UpdateCards();
     }
 
     private async void Loaded(object sender, RoutedEventArgs args)
@@ -83,11 +121,14 @@ public sealed partial class MainWindow : Window
             presenter.PreferredMinimumHeight = (int)(640 * scale);
         }
         transcriptScroll = FindScroll(TranscriptList); summaryScroll = FindScroll(SummaryList);
-        chatScroll = FindScroll(ChatList);
-        if (chatScroll is not null) chatScroll.ViewChanged += (_, _) =>
-            chatFollowing = chatScroll.ScrollableHeight - chatScroll.VerticalOffset < 40;
+        FindChatScroll();
         if (transcriptScroll is not null) transcriptScroll.ViewChanged += (_, _) =>
-            transcriptFollowing = transcriptScroll.ScrollableHeight - transcriptScroll.VerticalOffset < 40;
+        {
+            var following = transcriptScroll.ScrollableHeight - transcriptScroll.VerticalOffset < 40;
+            if (following == transcriptFollowing) return;
+            transcriptFollowing = following;
+            UpdateCards();
+        };
         if (summaryScroll is not null) summaryScroll.ViewChanged += (_, _) =>
             summaryFollowing = summaryScroll.ScrollableHeight - summaryScroll.VerticalOffset < 40;
         await Run(Model.ConnectAsync);
@@ -100,115 +141,444 @@ public sealed partial class MainWindow : Window
 
     private void Refresh(string kind)
     {
+        if (kind == "chat.preview")
+        {
+            RefreshChatPreview();
+            return;
+        }
         updating = true;
-        StartIcon.Glyph = Model.Active ? "\uE71A" : "\uE7C8";
-        IconActions.Describe(StartButton, Model.Active ? Model.Mode == "captions" ? "字幕运行中" : "结束会议" : "开始会议");
+        var stopping = Model.Active && Model.Mode != "captions";
+        if (stopping != startDanger)
+        {
+            startDanger = stopping;
+            StartButton.Style = (Style)Application.Current.Resources[stopping ? "DangerButtonStyle" : "AccentButtonStyle"];
+        }
+        StartIcon.Glyph = Model.Active ? "" : "";
+        StartLabel.Text = !Model.Active ? "开始录制" : Model.Mode switch
+        { "captions" => "字幕运行中", "file" => "停止转写", _ => "结束会议" };
+        AutomationProperties.SetName(StartButton, StartLabel.Text);
         StartButton.IsEnabled = Model.Connected && (!Model.Active || Model.Mode != "captions");
         ImportButton.IsEnabled = Model.Connected && !Model.Active;
         ScheduleButton.IsEnabled = Model.Connected;
-        ThemeButton.IsEnabled = Model.Connected && !changingTheme;
+        ThemeButton.IsEnabled = ThemeLightOption.IsEnabled = ThemeDarkOption.IsEnabled = Model.Connected && !changingTheme;
+        TrayToggle.IsEnabled = Model.Connected && !closing;
+        EditProfilesButton.IsEnabled = Model.Connected && !closing;
+        (ProfilesPanel.Content as ApiProfilesView)?.SetConnected(Model.Connected);
+        tray.Update(Model.Status);
         TitleEdit.IsEnabled = Model.Connected;
+        RenameButton.IsEnabled = Model.Connected && (Model.Directory.Length > 0 || !Model.Active);
         LanguagePicker.IsEnabled = !Model.Active;
         SourcePicker.IsEnabled = Model.Connected && !Model.SourceSwitching
             && (!Model.Active || Model.Mode == "meeting" && Model.State == "recording");
-        ToolTipService.SetToolTip(SourcePicker, Model.SourceSwitching
-            ? "正在切换音源…" : "会议录音时可直接切换监听音源");
+        SourceHint.Text = Model.SourceSwitching ? "正在切换音源…"
+            : Model.Active && Model.Mode == "meeting" && Model.State == "recording" ? "录音中可直接切换音源" : "";
         if (Model.Active && Model.Mode == "meeting"
             && (kind is "session.source" or "snapshot" or "error"))
             SourcePicker.SelectedItem = SourcePicker.Items.OfType<ComboBoxItem>().FirstOrDefault(
                 item => (string)item.Tag == (Model.AudioSource.RequestedSource ?? Model.AudioSource.Source));
-        RenameButton.IsEnabled = Model.Connected && Model.Directory.Length > 0;
         CopyAllButton.IsEnabled = Model.Connected && Model.Entries.Count + Model.Summaries.Count > 0;
         CopyTranscriptButton.IsEnabled = Model.Connected && Model.Entries.Count > 0;
         CopySummaryButton.IsEnabled = Model.Connected && Model.Summaries.Count > 0;
         ChatSendButton.IsEnabled = Model.Connected && Model.MeetingId.Length > 0 && !Model.ChatBusy && !chatSending;
         ChatCancelButton.Visibility = Model.ChatBusy ? Visibility.Visible : Visibility.Collapsed;
         ChatCancelButton.IsEnabled = Model.Connected;
-        HistoryList.IsEnabled = Model.Connected && !Model.Active && !Model.SummaryBusy && !deletingMeeting;
+        ChatContextRing.IsIndeterminate = Model.ChatContext.Compressing;
+        ChatContextNotice.Text = Model.ChatActivity.Length > 0 ? Model.ChatActivity : Model.ChatContext.StateText;
+        ChatContextNotice.Visibility = ChatContextNotice.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (kind is "chat" or "meeting" or "meeting.deleted" or "connection" or "snapshot")
+            RefreshChatPreview();
         SummaryButton.IsEnabled = Model.Connected && Model.Entries.Count > 0 && !Model.SummaryBusy;
-        SummaryIcon.Glyph = Model.SummaryBusy ? "\uE916" : "\uE945";
-        ToolTipService.SetToolTip(SummaryButton, Model.SummaryBusy ? "总结中…" : "手动总结");
+        SummaryIcon.Glyph = Model.SummaryBusy ? "" : "";
+        SummaryButtonLabel.Text = Model.SummaryBusy ? "总结中…" : "立即总结";
+        SummaryProgress.IsActive = Model.SummaryBusy;
+        SummaryProgress.Visibility = Model.SummaryBusy ? Visibility.Visible : Visibility.Collapsed;
         FolderButton.IsEnabled = Model.Directory.Length > 0;
+        ExportBar.Message = Model.ExportError;
+        ExportBar.IsOpen = Model.ExportError.Length > 0;
+        ExportBar.Visibility = ExportBar.IsOpen ? Visibility.Visible : Visibility.Collapsed;
+        RetryExportButton.IsEnabled = Model.Connected;
         ReconnectButton.Visibility = Model.Connected ? Visibility.Collapsed : Visibility.Visible;
+        SettingsReconnectButton.IsEnabled = !Model.Connected;
+        BackendSummary.Text = Model.Connected ? "已连接" : "已断开 · 点击“重新连接”重启本地后端";
         NotesTree.IsEnabled = NewNoteButton.IsEnabled = ManageNotesButton.IsEnabled = Model.Connected;
         if (kind is "configuration" or "notes.changed" or "connection")
             _ = RefreshSidebarNotes();
-        if (Model.Error.Length > 0) { ErrorBar.Message = Model.Error; ErrorBar.IsOpen = true; }
+        // Reopen the error bar only for a new error, so closing it is not undone by the next event.
+        if (Model.Error.Length > 0 && (kind == "error" || Model.Error != shownError))
+        { ErrorBar.Message = Model.Error; ErrorBar.IsOpen = true; ErrorBar.Visibility = Visibility.Visible; }
+        shownError = Model.Error;
         if (kind is "configuration" or "appearance")
         {
             Automatic.IsChecked = Model.Configuration.AutomaticSummary;
             Interval.Value = Model.Configuration.IntervalMinutes;
-            IconActions.Describe(ScheduleButton, Model.Configuration.AutomaticSummary
-                ? $"自动总结 · 每 {Model.Configuration.IntervalMinutes} 分钟" : "自动总结 · 已关闭");
-            ChatEffortLabel.Text = ChatOptionsFlyout.EffortLabel(Model.Configuration.ChatReasoningEffort);
+            ScheduleLabel.Text = Model.Configuration.AutomaticSummary
+                ? $"自动总结 · 每 {Model.Configuration.IntervalMinutes} 分钟" : "自动总结 · 已关闭";
+            AutomationProperties.SetName(ScheduleButton, ScheduleLabel.Text);
+            var effort = ChatOptionsFlyout.EffortLabel(Model.Configuration.ChatReasoningEffort);
             var chatProfile = Model.Configuration.ApiProfiles.FirstOrDefault(p => p.Id ==
                 (Model.Configuration.ChatApiProfile ?? Model.Configuration.SelectedApiProfile));
             var chatModel = string.IsNullOrWhiteSpace(Model.Configuration.ChatModel)
                 ? chatProfile?.Model : Model.Configuration.ChatModel;
+            if (string.IsNullOrWhiteSpace(chatModel) && chatProfile?.UsesLocalAgent == true)
+                chatModel = $"{chatProfile.Name}（默认模型）";
+            ChatEffortLabel.Text = string.IsNullOrWhiteSpace(chatModel) ? effort : $"{chatModel} · {effort}";
             ToolTipService.SetToolTip(ChatOptionsButton,
-                $"模型：{(string.IsNullOrWhiteSpace(chatModel) ? "未选择" : chatModel)}\n思考强度：{ChatEffortLabel.Text}");
-            var dark = Model.Configuration.Appearance == "dark";
-            ThemeIcon.Glyph = dark ? "\uE706" : "\uE708";
-            IconActions.Describe(ThemeButton, dark ? "切换浅色模式" : "切换深色模式");
+                $"模型：{(string.IsNullOrWhiteSpace(chatModel) ? "未选择" : chatModel)}\n思考强度：{effort}");
             ApplyTheme();
+            if (Model.Connected) Services.ThemeCache.Write(themeCache, Model.Configuration.Appearance);
+            RefreshSettings();
         }
-        if (kind is "meeting" or "meeting.loaded" or "meeting.renamed" or "meeting.deleted") TitleEdit.Text = Model.MeetingTitle;
+        if (kind == "devices") PopulateDevicePickers();
+        if ((kind is "meeting" or "meeting.loaded" or "meeting.renamed" or "meeting.deleted") && !renaming)
+            TitleEdit.Text = Model.MeetingTitle;
         if (kind == "progress") { progressStarted = DateTime.Now; progressStatus = Model.Status; startupClock.Start(); }
-        if (Model.State != "preparing") { startupClock.Stop(); Title = "言川 · 会议转写"; }
+        if (Model.State != "preparing") { startupClock.Stop(); progressStatus = ""; }
+        UpdateWindowTitle();
         if (kind == "transcript" && transcriptFollowing && Model.Entries.Count > 0)
             TranscriptList.ScrollIntoView(Model.Entries[^1]);
         if (kind == "summary.summary" && summaryFollowing && Model.Summaries.Count > 0)
             SummaryList.ScrollIntoView(Model.Summaries[^1]);
-        if (kind == "chat" && chatFollowing && Model.ChatMessages.Count > 0)
+        if (kind == "chat" && chatFollowing && Model.ChatPreviewText.Length == 0 && Model.ChatMessages.Count > 0)
             ChatList.ScrollIntoView(Model.ChatMessages[^1]);
         if (kind is "configuration" or "meeting" or "meeting.loaded" or "meeting.deleted" or "transcript"
             or "chat" or "chat.updated" or "summary.summary" or "state" or "snapshot" or "disconnected")
             ScheduleContextUsage();
+        RebuildMeetingRows();
+        UpdateRecordingClock();
+        UpdateHeader();
+        UpdateCards();
         updating = false;
     }
 
-    private void ApplyTheme()
+    // ── Header, cards and window title ──────────────────────────────────────
+
+    private void UpdateWindowTitle()
     {
-        Root.RequestedTheme = Model.Configuration.Appearance == "dark" ? ElementTheme.Dark : ElementTheme.Light;
-        var dark = Root.RequestedTheme == ElementTheme.Dark;
-        var background = dark ? Microsoft.UI.ColorHelper.FromArgb(255, 32, 32, 32) : Microsoft.UI.ColorHelper.FromArgb(255, 243, 243, 243);
-        var foreground = dark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
-        AppWindow.TitleBar.BackgroundColor = AppWindow.TitleBar.ButtonBackgroundColor = background;
-        AppWindow.TitleBar.InactiveBackgroundColor = AppWindow.TitleBar.ButtonInactiveBackgroundColor = background;
-        AppWindow.TitleBar.ForegroundColor = AppWindow.TitleBar.ButtonForegroundColor = foreground;
-        captions?.ApplyTheme(Root.RequestedTheme);
+        var detail = view switch { "chat" => "会议问答", "settings" => "设置", "profiles" => "API 配置", _ => "会议转写" };
+        if (Model.State == "preparing" && progressStatus.Length > 0)
+        {
+            var progress = $"{progressStatus} · {(DateTime.Now - progressStarted).TotalSeconds:F0}s";
+            Title = $"言川 · {progress}";
+            AppTitleDetail.Text = progress;
+            return;
+        }
+        Title = $"言川 · {detail}";
+        AppTitleDetail.Text = detail;
     }
 
-    public async Task Run(Func<Task> action)
-    { try { await action(); } catch (Exception error) { Model.ShowError(error); } }
-    private static string Tag(ComboBox box) => (string)((ComboBoxItem)box.SelectedItem).Tag;
-    private async void SourceChanged(object sender, SelectionChangedEventArgs args)
+    private bool Recording => Model.Active && Model.Mode == "meeting" && Model.State == "recording";
+
+    private void UpdateHeader()
     {
-        if (updating || !Model.Connected || !Model.Active || Model.Mode != "meeting"
-            || Model.State != "recording") return;
-        await Run(() => Model.SetSourceAsync(Tag(SourcePicker)));
+        var meeting = view == "meeting";
+        BackButton.Visibility = meeting ? Visibility.Collapsed : Visibility.Visible;
+        ChatToggle.Visibility = ScheduleButton.Visibility = meeting ? Visibility.Visible : Visibility.Collapsed;
+        RenameButton.Visibility = meeting && !renaming ? Visibility.Visible : Visibility.Collapsed;
+        if (!renaming) TitleText.Visibility = Visibility.Visible;
+        TitleText.Text = view switch
+        {
+            "chat" => "会议问答", "settings" => "设置", "profiles" => "API 配置",
+            _ => Model.MeetingTitle.Length > 0 ? Model.MeetingTitle
+                : pendingTitle.Length > 0 ? pendingTitle : "新会议",
+        };
+        RecordingPill.Visibility = meeting && Recording ? Visibility.Visible : Visibility.Collapsed;
+        MetaText.Text = view switch
+        {
+            "chat" => Model.MeetingId.Length > 0 ? $"{Model.MeetingTitle} · 回答时按需查阅完整原文"
+                : "打开或开始一场会议后即可提问",
+            "settings" or "profiles" => "",
+            _ => MeetingMeta(),
+        };
+        MetaText.Visibility = MetaText.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        FitTitle();
     }
-    private async void ToggleMeeting(object sender, RoutedEventArgs args) => await Run(async () =>
+
+    private MeetingItem? CurrentListItem => Model.Directory.Length == 0 ? null : Model.Meetings.FirstOrDefault(item =>
+        string.Equals(item.Directory, Model.Directory, StringComparison.OrdinalIgnoreCase));
+
+    private string MeetingMeta()
     {
-        if (Model.Active) await Model.Backend.CallAsync("session.stop");
-        else await Model.StartAsync("meeting", TitleEdit.Text, Tag(SourcePicker), Tag(LanguagePicker), microphoneId, systemId);
-    });
-    private async void ImportFile(object sender, RoutedEventArgs args) => await Run(async () =>
+        if (!Model.Connected || Model.Directory.Length == 0) return Model.Status;
+        var parts = new List<string>();
+        if (MeetingTime.Parse(Model.MeetingStartedAt) is { } started)
+            parts.Add(started.ToString(started.Year == DateTimeOffset.Now.Year ? "M 月 d 日 HH:mm" : "yyyy 年 M 月 d 日 HH:mm",
+                CultureInfo.InvariantCulture));
+        if (Recording) parts.Add("本地识别，自动保存");
+        else if (Model.Active) parts.Add(Model.Status);
+        else
+        {
+            if (MeetingTime.Duration(Model.MeetingStartedAt, Model.MeetingEndedAt ?? CurrentListItem?.EndedAt) is { } duration)
+                parts.Add($"时长 {duration}");
+            parts.Add(Model.State == "error" ? Model.Status : "本地识别，已自动保存");
+        }
+        return string.Join(" · ", parts);
+    }
+
+    private void TitleAreaResized(object sender, SizeChangedEventArgs args) => FitTitle();
+
+    // Text in a horizontal StackPanel is measured unbounded, so cap it to keep long titles trimmed.
+    private void FitTitle()
     {
-        var picker = new FileOpenPicker();
-        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
-        picker.FileTypeFilter.Add(".wav"); picker.FileTypeFilter.Add(".flac");
-        var file = await picker.PickSingleFileAsync();
-        if (file is not null) await Model.StartAsync("file", Path.GetFileNameWithoutExtension(file.Name),
-            Tag(SourcePicker), Tag(LanguagePicker), microphoneId, systemId, file.Path);
-    });
+        var width = TitleArea.ActualWidth;
+        if (width <= 0) return;
+        TitleText.MaxWidth = Math.Max(120, width - 44);
+        TitleEdit.MaxWidth = Math.Max(200, width - 8);
+        MetaText.MaxWidth = Math.Max(120, width - (RecordingPill.Visibility == Visibility.Visible
+            ? RecordingPill.ActualWidth + 10 : 0));
+    }
+
+    private void UpdateRecordingClock()
+    {
+        if (!Recording) { recordClock.Stop(); recordingSince = null; return; }
+        recordingSince ??= DateTimeOffset.Now;
+        if (!recordClock.IsEnabled) recordClock.Start();
+        var elapsed = DateTimeOffset.Now - (MeetingTime.Parse(Model.MeetingStartedAt) ?? recordingSince.Value);
+        if (elapsed < TimeSpan.Zero) elapsed = TimeSpan.Zero;
+        RecordingClock.Text = $"录制中 {(int)elapsed.TotalHours:00}:{elapsed.Minutes:00}:{elapsed.Seconds:00}";
+    }
+
+    private void UpdateCards()
+    {
+        var entries = Model.Entries.Count;
+        var live = Model.Active && Model.Mode != "captions";
+        TranscriptCount.Text = entries == 0 ? "" : live
+            ? $"{entries} 段 · {(transcriptFollowing ? "跟随最新" : "已暂停跟随")}" : $"{entries} 段";
+        TranscriptEmpty.Visibility = entries == 0 ? Visibility.Visible : Visibility.Collapsed;
+        TranscriptEmptyTitle.Text = !live ? "还没有转写内容"
+            : Model.State == "preparing" ? "正在准备识别…" : "正在聆听…";
+        TranscriptEmptyHint.Text = live ? "识别出的句子会逐条出现在这里。"
+            : "点击右上角「开始录制」，或从左侧导入录音。识别出的句子会逐条出现在这里。";
+        LiveBadge.Visibility = live ? Visibility.Visible : Visibility.Collapsed;
+        var duration = MeetingTime.Duration(Model.MeetingStartedAt, Model.MeetingEndedAt ?? CurrentListItem?.EndedAt);
+        TranscriptFooterText.Text = live ? Model.LiveText
+            : entries == 0 ? ""
+            : duration is null ? $"共 {entries} 段" : $"本次转写已结束 · 共 {duration}";
+        TranscriptFooter.Visibility = TranscriptFooterText.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        var summaries = Model.Summaries.Count;
+        SummaryCount.Text = summaries == 0 ? "" : $"{summaries} 次";
+        SummaryEmpty.Visibility = summaries == 0 ? Visibility.Visible : Visibility.Collapsed;
+        SummaryEmptyHint.Text = Model.Configuration.AutomaticSummary
+            ? $"录制或导入后，每 {Model.Configuration.IntervalMinutes} 分钟自动总结新增内容；也可以点「立即总结」。"
+            : "自动总结已关闭，有转写内容后可点「立即总结」。";
+    }
+
+    private void ShowNotice(string text)
+    {
+        CopyNotice.Text = text;
+        CopyToast.Visibility = Visibility.Visible;
+        copyClock.Stop(); copyClock.Start();
+    }
+
+    private void NoticeClosed(InfoBar sender, InfoBarClosedEventArgs args) => sender.Visibility = Visibility.Collapsed;
+
+    // ── Views ───────────────────────────────────────────────────────────────
+
+    private void ShowView(string next)
+    {
+        if (renaming) EndRename();
+        if (view == "profiles" && next != "profiles") ProfilesPanel.Content = null;
+        view = next;
+        ChatPanel.Visibility = chatOpen ? Visibility.Visible : Visibility.Collapsed;
+        SettingsPanel.Visibility = view == "settings" ? Visibility.Visible : Visibility.Collapsed;
+        ProfilesPanel.Visibility = view == "profiles" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsSelected.Visibility = settingsOpen ? Visibility.Visible : Visibility.Collapsed;
+        IconActions.Describe(BackButton, view == "profiles" ? "返回 AI 连接" : "返回会议记录");
+        ArrangeWorkspace();
+        UpdateHeader();
+        UpdateWindowTitle();
+        if (chatOpen) { ChatInput.Focus(FocusState.Programmatic); ScheduleContextUsage(); RefreshChatPreview(); }
+        if (view == "settings") RefreshSettings();
+    }
+
+    private void ToggleChat(object sender, RoutedEventArgs args) => ShowView(chatOpen ? "meeting" : "chat");
+    private void ToggleSettings(object sender, RoutedEventArgs args) => ShowView(settingsOpen ? "meeting" : "settings");
+    private void GoBack(object sender, RoutedEventArgs args)
+    {
+        if (view == "profiles") FinishProfileEdit();
+        else ShowView("meeting");
+    }
+    private void WorkspaceResized(object sender, SizeChangedEventArgs args) => ArrangeWorkspace();
+    private void ContentTabChanged(object sender, SelectionChangedEventArgs args) => ArrangeWorkspace();
+
+    private void ArrangeWorkspace()
+    {
+        if (ChatPanel is null || Workspace is null || ContentTabs is null || SettingsPanel is null) return;
+        var meeting = view == "meeting";
+        Workspace.Visibility = settingsOpen ? Visibility.Collapsed : Visibility.Visible;
+        var compact = meeting && Workspace.ActualWidth < 900;
+        TranscriptColumn.Width = chatOpen ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+        ChatColumn.Width = chatOpen ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
+        SummaryColumn.Width = !meeting || compact ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
+        ContentTabs.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
+        TranscriptPanel.Visibility = meeting && (!compact || ContentTabs.SelectedIndex == 0) ? Visibility.Visible : Visibility.Collapsed;
+        SummaryPanel.Visibility = meeting && (!compact || ContentTabs.SelectedIndex == 1) ? Visibility.Visible : Visibility.Collapsed;
+        Grid.SetColumn(SummaryPanel, compact ? 0 : 1);
+        Workspace.ColumnSpacing = meeting ? 16 : 0;
+        MeetingControls.Visibility = meeting ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    // ── Meeting title ───────────────────────────────────────────────────────
+
+    private void BeginRename(object sender, RoutedEventArgs args) => BeginRename();
+
+    private void BeginRename()
+    {
+        if (!Model.Connected || renaming) return;
+        renaming = true;
+        TitleEdit.Text = Model.Directory.Length > 0 ? Model.MeetingTitle : pendingTitle;
+        TitleText.Visibility = RenameButton.Visibility = Visibility.Collapsed;
+        TitleEdit.Visibility = Visibility.Visible;
+        TitleEdit.Focus(FocusState.Programmatic);
+        TitleEdit.SelectAll();
+    }
+
+    private async void TitleEditKeyDown(object sender, KeyRoutedEventArgs args)
+    {
+        if (args.Key == VirtualKey.Enter) { args.Handled = true; await CommitRename(); }
+        else if (args.Key == VirtualKey.Escape) { args.Handled = true; EndRename(); }
+    }
+
+    private async void TitleEditLostFocus(object sender, RoutedEventArgs args) => await CommitRename();
+
+    private async Task CommitRename()
+    {
+        if (!renaming || committingRename) return;
+        committingRename = true;
+        var title = TitleEdit.Text.Trim();
+        try
+        {
+            if (Model.Directory.Length == 0) pendingTitle = title;
+            else if (title.Length > 0 && title != Model.MeetingTitle) await Run(() => Model.RenameAsync(title));
+        }
+        finally { committingRename = false; EndRename(); }
+    }
+
+    private void EndRename()
+    {
+        renaming = false;
+        TitleEdit.Visibility = Visibility.Collapsed;
+        UpdateHeader();
+    }
+
+    // ── Sidebar history ─────────────────────────────────────────────────────
+
+    private bool HistoryLocked => !Model.Connected || Model.Active || Model.SummaryBusy || deletingMeeting;
+
+    private void ScheduleMeetingRows()
+    {
+        if (rowsQueued) return;
+        rowsQueued = true;
+        DispatcherQueue.TryEnqueue(() => { rowsQueued = false; RebuildMeetingRows(force: true); UpdateHeader(); UpdateCards(); });
+    }
+
+    private void RebuildMeetingRows(bool force = false)
+    {
+        var recording = Model.Active && Model.Mode == "meeting";
+        var signature = $"{recording}|{HistoryLocked}|{Model.Directory}|{MeetingSearch.Text}|{DateTime.Now:yyyyMMdd}";
+        if (!force && signature == meetingSignature) return;
+        meetingSignature = signature;
+        var groups = MeetingListProjection.Build(Model.Meetings, MeetingSearch.Text, Model.Directory,
+            recording, HistoryLocked, DateTimeOffset.Now);
+        meetingGroups.Source = groups;
+        HistoryList.SelectedItem = groups.SelectMany(group => group).FirstOrDefault(row => row.Current);
+        HistoryEmpty.Text = Model.Meetings.Count == 0 ? "还没有会议记录" : "没有匹配的会议";
+        HistoryEmpty.Visibility = groups.Count == 0 ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void MeetingSearchChanged(AutoSuggestBox sender, AutoSuggestBoxTextChangedEventArgs args) =>
+        RebuildMeetingRows();
+
+    private void RestoreHistorySelection() => DispatcherQueue.TryEnqueue(() =>
+        HistoryList.SelectedItem = (meetingGroups.Source as List<MeetingGroup>)?
+            .SelectMany(group => group).FirstOrDefault(row => row.Current));
+
     private async void OpenHistory(object sender, ItemClickEventArgs args)
     {
-        if (!deletingMeeting) await Run(() => Model.OpenAsync((MeetingItem)args.ClickedItem));
+        if (args.ClickedItem is not MeetingRow row) return;
+        if (view != "meeting") ShowView("meeting");
+        if (row.Current) return;
+        if (HistoryLocked)
+        {
+            RestoreHistorySelection();
+            if (Model.Connected && !deletingMeeting) ShowNotice("录音或总结进行中，结束后再切换会议");
+            return;
+        }
+        await Run(() => Model.OpenAsync(row.Item));
     }
-    private async void DeleteMeeting(object sender, RoutedEventArgs args)
+
+    private void MeetingRowEntered(object sender, PointerRoutedEventArgs args) => SetMoreVisible(sender, true);
+    private void MeetingRowExited(object sender, PointerRoutedEventArgs args) => SetMoreVisible(sender, false);
+    private void MeetingMenuFocused(object sender, RoutedEventArgs args) => ((UIElement)sender).Opacity = 1;
+    private void MeetingMenuUnfocused(object sender, RoutedEventArgs args) => ((UIElement)sender).Opacity = 0;
+
+    private static void SetMoreVisible(object sender, bool visible)
     {
-        if (deletingMeeting || !Model.Connected || sender is not Button { Tag: MeetingItem item }) return;
+        if (sender is Grid grid && grid.Children.OfType<Button>().FirstOrDefault() is { } more
+            && more.FocusState == FocusState.Unfocused)
+            more.Opacity = visible ? 1 : 0;
+    }
+
+    private void ShowMeetingMenu(object sender, RoutedEventArgs args)
+    {
+        if (sender is FrameworkElement { Tag: MeetingRow row } element)
+            MeetingMenu(row).ShowAt(element, new FlyoutShowOptions { Placement = FlyoutPlacementMode.BottomEdgeAlignedRight });
+    }
+
+    private void MeetingRowRightTapped(object sender, RightTappedRoutedEventArgs args)
+    {
+        if (sender is not FrameworkElement { DataContext: MeetingRow row } element) return;
+        MeetingMenu(row).ShowAt(element, new FlyoutShowOptions { Position = args.GetPosition(element) });
+        args.Handled = true;
+    }
+
+    private MenuFlyout MeetingMenu(MeetingRow row)
+    {
+        var menu = new MenuFlyout();
+        var reachable = Model.Connected && (row.Current || !HistoryLocked);
+        MenuFlyoutItem Item(string text, string glyph, Func<Task> action, bool enabled)
+        {
+            var item = new MenuFlyoutItem { Text = text, Icon = new FontIcon { Glyph = glyph }, IsEnabled = enabled };
+            item.Click += async (_, _) => await Run(action);
+            return item;
+        }
+        menu.Items.Add(Item("重命名", "", () => RenameFromMenu(row), reachable));
+        menu.Items.Add(Item("打开记录目录", "", () => { OpenDirectory(row.Item.Directory); return Task.CompletedTask; },
+            true));
+        menu.Items.Add(Item("复制全部内容", "", () => CopyFromMenu(row), reachable));
+        menu.Items.Add(new MenuFlyoutSeparator());
+        var delete = Item("删除会议…", "", () => DeleteMeetingAsync(row.Item), Model.Connected && !HistoryLocked);
+        delete.Foreground = new SolidColorBrush(Root.ActualTheme == ElementTheme.Dark
+            ? Microsoft.UI.ColorHelper.FromArgb(255, 255, 153, 164) : Microsoft.UI.ColorHelper.FromArgb(255, 196, 43, 28));
+        menu.Items.Add(delete);
+        return menu;
+    }
+
+    // Rename and copy act on the open meeting, so a row from history is opened first.
+    private async Task<bool> OpenRowAsync(MeetingRow row)
+    {
+        if (!row.Current)
+        {
+            if (HistoryLocked) return false;
+            await Model.OpenAsync(row.Item);
+        }
+        return string.Equals(Model.Directory, row.Item.Directory, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private async Task RenameFromMenu(MeetingRow row)
+    {
+        if (!await OpenRowAsync(row)) return;
+        if (view != "meeting") ShowView("meeting");
+        BeginRename();
+    }
+
+    private async Task CopyFromMenu(MeetingRow row)
+    {
+        if (await OpenRowAsync(row)) await CopyContentAsync("all");
+    }
+
+    private async Task DeleteMeetingAsync(MeetingItem item)
+    {
+        if (deletingMeeting || !Model.Connected) return;
         if (Model.Active || Model.SummaryBusy)
         {
             Model.ShowError(new InvalidOperationException("请先结束录音或等待总结完成，再删除会议。"));
@@ -236,25 +606,62 @@ public sealed partial class MainWindow : Window
         catch (Exception error) { Model.ShowError(error); }
         finally { deletingMeeting = false; Refresh("deletion.completed"); }
     }
-    private async void Summarize(object sender, RoutedEventArgs args) => await Run(Model.SummarizeAsync);
-    private async void RenameMeeting(object sender, RoutedEventArgs args) =>
-        await Run(() => Model.RenameAsync(TitleEdit.Text));
 
-    private void SetClipboard(string text)
+    // ── Meeting actions ─────────────────────────────────────────────────────
+
+    public async Task Run(Func<Task> action)
+    { try { await action(); } catch (Exception error) { Model.ShowError(error); } }
+    private async void RetryExport(object sender, RoutedEventArgs args) => await Run(Model.RetryExportAsync);
+    private static string Tag(ComboBox box) => (string)((ComboBoxItem)box.SelectedItem).Tag;
+    private async void SourceChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (updating || !Model.Connected || !Model.Active || Model.Mode != "meeting"
+            || Model.State != "recording") return;
+        await Run(() => Model.SetSourceAsync(Tag(SourcePicker)));
+    }
+    private async void ToggleMeeting(object sender, RoutedEventArgs args) => await Run(async () =>
+    {
+        if (Model.Active) await Model.Backend.CallAsync("session.stop");
+        else
+        {
+            await Model.StartAsync("meeting", pendingTitle, Tag(SourcePicker), Tag(LanguagePicker), microphoneId, systemId);
+            pendingTitle = "";
+        }
+    });
+    private async void ImportFile(object sender, RoutedEventArgs args) => await Run(async () =>
+    {
+        var picker = new FileOpenPicker();
+        WinRT.Interop.InitializeWithWindow.Initialize(picker, WinRT.Interop.WindowNative.GetWindowHandle(this));
+        picker.FileTypeFilter.Add(".wav"); picker.FileTypeFilter.Add(".flac");
+        var file = await picker.PickSingleFileAsync();
+        if (file is not null)
+        {
+            if (view != "meeting") ShowView("meeting");
+            await Model.StartAsync("file", Path.GetFileNameWithoutExtension(file.Name),
+                Tag(SourcePicker), Tag(LanguagePicker), microphoneId, systemId, file.Path);
+        }
+    });
+    private async void Summarize(object sender, RoutedEventArgs args) => await Run(Model.SummarizeAsync);
+
+    private void SetClipboard(string text, string notice = "已复制到剪贴板")
     {
         if (string.IsNullOrWhiteSpace(text)) return;
         var data = new DataPackage(); data.SetText(text); Clipboard.SetContent(data); Clipboard.Flush();
-        CopyNotice.Text = "已复制到剪贴板"; copyClock.Stop(); copyClock.Start();
+        ShowNotice(notice);
     }
     private async void CopyContent(object sender, RoutedEventArgs args) => await Run(async () =>
         await CopyContentAsync((string)((Button)sender).Tag));
     private async Task CopyContentAsync(string kind)
     {
         var result = await Model.Backend.CallAsync("meetings.content", new { kind });
-        SetClipboard(result.GetProperty("text").GetString() ?? "");
+        SetClipboard(result.GetProperty("text").GetString() ?? "", kind switch
+        { "transcript" => "已复制全部转写", "summaries" => "已复制全部总结", _ => "已复制会议全部内容" });
     }
     private void CopyChatMessage(object sender, RoutedEventArgs args) =>
         SetClipboard(LiveCaptions.Desktop.Rendering.MarkdownClipboard.Format(((Button)sender).Tag as string ?? ""));
+
+    // ── Notes ───────────────────────────────────────────────────────────────
+
     private async Task RefreshSidebarNotes()
     {
         var revision = ++notesRevision;
@@ -314,38 +721,30 @@ public sealed partial class MainWindow : Window
         await Run(async () =>
         {
             await NotesViewModel.AddAnswerAsync(Model.Backend, meetingId, message.RequestId);
-            CopyNotice.Text = "已加入对应会议的笔记";
-            copyClock.Stop(); copyClock.Start();
+            ShowNotice("已加入对应会议的笔记");
         });
     }
-    private void ToggleChat(object sender, RoutedEventArgs args)
+
+    // ── Meeting chat ────────────────────────────────────────────────────────
+
+    private void RefreshChatPreview()
     {
-        chatOpen = !chatOpen;
-        ChatPanel.Visibility = chatOpen ? Visibility.Visible : Visibility.Collapsed;
-        ChatToggleIcon.Glyph = chatOpen ? "\uE72B" : "\uE8F2";
-        ToolTipService.SetToolTip(ChatToggle, chatOpen ? "返回会议" : "会议问答");
-        Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ChatToggle, chatOpen ? "返回会议" : "会议问答");
-        ArrangeWorkspace();
-        if (chatOpen) { ChatInput.Focus(FocusState.Programmatic); ScheduleContextUsage(); }
+        ChatPreview.Text = Model.ChatPreviewText;
+        ChatPreview.Visibility = ChatPreview.Text.Length > 0 ? Visibility.Visible : Visibility.Collapsed;
+        if (!chatOpen || !chatFollowing || ChatPreview.Visibility != Visibility.Visible) return;
+        ChatList.UpdateLayout();
+        FindChatScroll();
+        chatScroll?.ChangeView(null, chatScroll.ScrollableHeight, null, disableAnimation: true);
     }
-    private void WorkspaceResized(object sender, SizeChangedEventArgs args) => ArrangeWorkspace();
-    private void ContentTabChanged(object sender, SelectionChangedEventArgs args) => ArrangeWorkspace();
-    private void ArrangeWorkspace()
+
+    private void FindChatScroll()
     {
-        if (ChatPanel is null || Workspace is null || ContentTabs is null) return;
-        var compact = !chatOpen && Workspace.ActualWidth < 900;
-        TranscriptColumn.Width = chatOpen ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        ChatColumn.Width = chatOpen ? new GridLength(1, GridUnitType.Star) : new GridLength(0);
-        SummaryColumn.Width = chatOpen || compact ? new GridLength(0) : new GridLength(1, GridUnitType.Star);
-        ContentTabs.Visibility = compact ? Visibility.Visible : Visibility.Collapsed;
-        TranscriptPanel.Visibility = !chatOpen && (!compact || ContentTabs.SelectedIndex == 0) ? Visibility.Visible : Visibility.Collapsed;
-        SummaryPanel.Visibility = !chatOpen && (!compact || ContentTabs.SelectedIndex == 1) ? Visibility.Visible : Visibility.Collapsed;
-        Grid.SetColumn(SummaryPanel, compact ? 0 : 1);
-        Workspace.ColumnSpacing = chatOpen ? 0 : 16;
-        WorkspaceTitle.Text = chatOpen ? "会议问答" : "会议记录";
-        MeetingControls.Visibility = ScheduleButton.Visibility = chatOpen ? Visibility.Collapsed : Visibility.Visible;
-        ContentArea.RowSpacing = chatOpen ? 0 : 16;
+        if (chatScroll is not null) return;
+        chatScroll = FindScroll(ChatList);
+        if (chatScroll is not null) chatScroll.ViewChanged += (_, _) =>
+            chatFollowing = chatScroll.ScrollableHeight - chatScroll.VerticalOffset < 40;
     }
+
     private async void SendChat(object sender, RoutedEventArgs args) => await SendChatInput();
     private async Task SendChatInput()
     {
@@ -355,7 +754,7 @@ public sealed partial class MainWindow : Window
         try { await Run(async () => { await Model.SendChatAsync(text); if (ChatInput.Text == text) ChatInput.Text = ""; }); }
         finally { chatSending = false; Refresh("chat"); }
     }
-    private async void ChatInputKeyDown(object sender, Microsoft.UI.Xaml.Input.KeyRoutedEventArgs args)
+    private async void ChatInputKeyDown(object sender, KeyRoutedEventArgs args)
     {
         if (args.Key == VirtualKey.Enter && (Microsoft.UI.Input.InputKeyboardSource.GetKeyStateForCurrentThread(VirtualKey.Control) & CoreVirtualKeyStates.Down) != 0)
         { args.Handled = true; await SendChatInput(); }
@@ -370,6 +769,7 @@ public sealed partial class MainWindow : Window
         if (!Model.Connected)
         {
             ChatContextRing.Value = 0;
+            ChatContextPercent.Text = "";
             ToolTipService.SetToolTip(ChatContextButton, "后端未连接，上下文用量暂不可用");
             return;
         }
@@ -393,8 +793,9 @@ public sealed partial class MainWindow : Window
             ChatContextRing.Foreground = usage.OverBudget
                 ? new SolidColorBrush(Microsoft.UI.Colors.OrangeRed)
                 : (Microsoft.UI.Xaml.Media.Brush)Root.Resources["ContextRingBrush"];
+            ChatContextPercent.Text = $"{usage.Percent:F0}%";
             ToolTipService.SetToolTip(ChatContextButton, usage.Description);
-            Microsoft.UI.Xaml.Automation.AutomationProperties.SetName(ChatContextButton, usage.Description);
+            AutomationProperties.SetName(ChatContextButton, usage.Description);
         }
         catch (Exception)
         {
@@ -415,22 +816,11 @@ public sealed partial class MainWindow : Window
         await Run(() => Model.RetryChatAsync((string)((Button)sender).Tag));
     private void OpenChatOptions(object sender, RoutedEventArgs args) =>
         ChatOptionsFlyout.Show(ChatOptionsButton, Model.Configuration, Model.Backend, Model.ShowError);
-    private async void ChatCapacity(object sender, RoutedEventArgs args) => await Run(async () =>
-    {
-        var input = new NumberBox { Value = Model.Configuration.ChatContextTokens, Minimum = 8192,
-            Header = "模型上下文容量（token）", SpinButtonPlacementMode = NumberBoxSpinButtonPlacementMode.Compact };
-        var body = new StackPanel { Spacing = 12, Width = 360 };
-        body.Children.Add(input);
-        body.Children.Add(new TextBlock { Text = "全文和聊天历史一并提交，不自动截断。预算采用估算值，实际容量由 API 服务决定。", TextWrapping = TextWrapping.Wrap, MaxWidth = 360 });
-        var dialog = new ContentDialog { XamlRoot = Root.XamlRoot, Title = "聊天上下文", Content = body,
-            PrimaryButtonText = "保存", CloseButtonText = "取消", RequestedTheme = Root.RequestedTheme };
-        if (await dialog.ShowAsync() == ContentDialogResult.Primary)
-        {
-            if (!double.IsFinite(input.Value) || input.Value != Math.Truncate(input.Value) || input.Value > int.MaxValue)
-                throw new InvalidOperationException("请输入有效的整数容量");
-            await Model.Backend.CallAsync("chat.configure", new { context_tokens = (int)input.Value });
-        }
-    });
+    private async void ChatCapacity(object sender, RoutedEventArgs args) => await Run(() =>
+        ChatContextDialog.ShowAsync(Root.XamlRoot, Root.RequestedTheme, Model, ChatInput.Text));
+
+    // ── Schedule, theme and settings ────────────────────────────────────────
+
     private async void ScheduleChanged(object sender, RoutedEventArgs args) => await SaveSchedule();
     private async void IntervalChanged(NumberBox sender, NumberBoxValueChangedEventArgs args) => await SaveSchedule();
     private async Task SaveSchedule()
@@ -439,29 +829,147 @@ public sealed partial class MainWindow : Window
         await Run(async () => await Model.Backend.CallAsync("schedule.set",
             new { minutes = (int)Math.Round(Interval.Value), automatic = Automatic.IsChecked == true }));
     }
-    private async void ToggleTheme(object sender, RoutedEventArgs args)
+
+    private void ApplyTheme()
+    {
+        var dark = Model.Configuration.Appearance == "dark";
+        Root.RequestedTheme = dark ? ElementTheme.Dark : ElementTheme.Light;
+        ThemeIcon.Glyph = dark ? "\uE706" : "\uE708";
+        IconActions.Describe(ThemeButton, dark ? "切换浅色模式" : "切换深色模式");
+        Services.WindowChrome.ApplyCaptionButtons(AppWindow, Root.RequestedTheme);
+        captions?.ApplyTheme(Root.RequestedTheme);
+    }
+
+    private async void ToggleTheme(object sender, RoutedEventArgs args) =>
+        await SetAppearance(Model.Configuration.Appearance == "dark" ? "light" : "dark");
+
+    private async void ThemeOptionClicked(object sender, RoutedEventArgs args)
+    {
+        var mode = (string)((FrameworkElement)sender).Tag;
+        SyncThemeOptions(); // ToggleButtons flip themselves; the saved configuration decides which is on.
+        if (mode != Model.Configuration.Appearance) await SetAppearance(mode);
+    }
+
+    private async Task SetAppearance(string mode)
     {
         if (changingTheme || !Model.Connected) return;
-        changingTheme = true; ThemeButton.IsEnabled = false;
+        changingTheme = true;
+        ThemeButton.IsEnabled = ThemeLightOption.IsEnabled = ThemeDarkOption.IsEnabled = false;
+        try { await Run(async () => await Model.Backend.CallAsync("appearance.set", new { mode })); }
+        finally
+        {
+            changingTheme = false;
+            ThemeButton.IsEnabled = ThemeLightOption.IsEnabled = ThemeDarkOption.IsEnabled = Model.Connected;
+            SyncThemeOptions();
+        }
+    }
+
+    private void SyncThemeOptions()
+    {
+        var dark = Model.Configuration.Appearance == "dark";
+        ThemeLightOption.IsChecked = !dark;
+        ThemeDarkOption.IsChecked = dark;
+    }
+
+    private void RefreshSettings()
+    {
+        SyncThemeOptions();
+        var wasUpdating = updating;
+        updating = true;
+        TrayToggle.IsOn = Model.Configuration.CloseToTray;
+        updating = wasUpdating;
+        var profiles = Model.Configuration.ApiProfiles;
+        var profile = profiles.FirstOrDefault(p => p.Id == Model.Configuration.SelectedApiProfile);
+        ProfileSummary.Text = profile is null ? "尚未配置"
+            : $"当前：{profile.Name}"
+              + (profile.Model.Length > 0 ? $" · {profile.Model}" : profile.UsesLocalAgent ? " · 默认模型" : "")
+              + $" · 共 {profiles.Count} 个配置";
+        var templates = Model.Configuration.PromptTemplates;
+        var template = templates.FirstOrDefault(t => t.Id == Model.Configuration.SelectedPromptTemplate);
+        TemplateSummary.Text = template is null ? $"共 {templates.Count} 个模板"
+            : $"当前：{template.Name} · 共 {templates.Count} 个模板";
+    }
+
+    private void SettingsCategoryChanged(object sender, SelectionChangedEventArgs args)
+    {
+        var category = (SettingsNav.SelectedItem as ListViewItem)?.Tag as string ?? "appearance";
+        SettingsAppearance.Visibility = category == "appearance" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsAudio.Visibility = category == "audio" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsModels.Visibility = category == "models" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsAi.Visibility = category == "ai" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsTemplates.Visibility = category == "templates" ? Visibility.Visible : Visibility.Collapsed;
+        SettingsDiagnostics.Visibility = category == "diagnostics" ? Visibility.Visible : Visibility.Collapsed;
+        if (category == "audio" && Model.Connected) _ = Run(Model.RefreshDevicesAsync);
+    }
+
+    private async void TrayToggled(object sender, RoutedEventArgs args)
+    {
+        if (updating || !Model.Connected) return;
+        var on = TrayToggle.IsOn;
+        if (on == Model.Configuration.CloseToTray) return;
+        await Run(async () =>
+        {
+            if (on) tray.Show();
+            try { await Model.Backend.CallAsync("window.configure", new { close_to_tray = on }); }
+            catch { if (!Model.Configuration.CloseToTray) tray.Dispose(); throw; }
+            if (!on) tray.Dispose();
+        });
+        RefreshSettings();
+    }
+
+    private async void RefreshDevices(object sender, RoutedEventArgs args) => await Run(Model.RefreshDevicesAsync);
+
+    private void PopulateDevicePickers()
+    {
+        updatingDevices = true;
         try
         {
-            var mode = Model.Configuration.Appearance == "dark" ? "light" : "dark";
-            await Run(async () => await Model.Backend.CallAsync("appearance.set", new { mode }));
+            Fill(MicrophonePicker, "microphone", microphoneId);
+            Fill(SystemPicker, "system", systemId);
+            // A device that disappeared falls back to the system default, matching what the picker shows.
+            microphoneId = DeviceId(MicrophonePicker); systemId = DeviceId(SystemPicker);
         }
-        finally { changingTheme = false; ThemeButton.IsEnabled = Model.Connected; }
+        finally { updatingDevices = false; }
+
+        void Fill(ComboBox box, string kind, string? selected)
+        {
+            var items = new List<DeviceInfo> { new("", "跟随系统默认设备", kind) };
+            items.AddRange(Model.Devices.Where(device => device.Kind == kind));
+            box.ItemsSource = items;
+            box.SelectedItem = items.FirstOrDefault(device => device.Id == (selected ?? "")) ?? items[0];
+        }
     }
-    private async void EditProfiles(object sender, RoutedEventArgs args) =>
-        await Run(() => ConfigurationDialogs.ProfilesAsync(Root.XamlRoot, Model.Configuration, Model.Backend));
+
+    private static string? DeviceId(ComboBox box) => box.SelectedItem is DeviceInfo { Id.Length: > 0 } device ? device.Id : null;
+
+    private void DeviceChanged(object sender, SelectionChangedEventArgs args)
+    {
+        if (updatingDevices) return;
+        microphoneId = DeviceId(MicrophonePicker); systemId = DeviceId(SystemPicker);
+    }
+
+    private void EditProfiles(object sender, RoutedEventArgs args)
+    {
+        if (!Model.Connected) return;
+        var editor = new ApiProfilesView(Model.Configuration, Model.Backend);
+        editor.Finished += () =>
+        {
+            if (ReferenceEquals(ProfilesPanel.Content, editor)) FinishProfileEdit();
+        };
+        ProfilesPanel.Content = editor;
+        ShowView("profiles");
+    }
+
+    private void FinishProfileEdit()
+    {
+        ShowView("settings");
+        EditProfilesButton.Focus(FocusState.Programmatic);
+    }
+
     private async void ManageModels(object sender, RoutedEventArgs args) =>
         await Run(() => ModelManagementDialog.ShowAsync(this, Root, Model));
     private async void EditTemplates(object sender, RoutedEventArgs args) =>
         await Run(() => ConfigurationDialogs.TemplatesAsync(Root.XamlRoot, Model.Configuration, Model.Backend));
-    private async void EditDevices(object sender, RoutedEventArgs args) => await Run(async () =>
-    {
-        await Model.RefreshDevicesAsync();
-        var selection = await ConfigurationDialogs.DevicesAsync(Root.XamlRoot, Model.Devices, microphoneId, systemId);
-        if (selection is { } value) { microphoneId = value.Microphone; systemId = value.System; }
-    });
     private void OpenCaptions(object sender, RoutedEventArgs args)
     {
         if (captions is null)
@@ -471,27 +979,66 @@ public sealed partial class MainWindow : Window
         }
         captions.ShowControls(); captions.ApplyTheme(Root.RequestedTheme); captions.Activate();
     }
-    private void OpenFolder(object sender, RoutedEventArgs args)
+    private void OpenFolder(object sender, RoutedEventArgs args) => OpenDirectory(Model.Directory);
+    private static void OpenDirectory(string directory)
     {
-        if (System.IO.Directory.Exists(Model.Directory)) Process.Start(new ProcessStartInfo(Model.Directory) { UseShellExecute = true });
+        if (System.IO.Directory.Exists(directory)) Process.Start(new ProcessStartInfo(directory) { UseShellExecute = true });
+    }
+    private void OpenBackendLog(object sender, RoutedEventArgs args)
+    {
+        var path = Services.ApplicationPaths.BackendLogPath(root);
+        try
+        {
+            if (!File.Exists(path)) throw new IOException("启动本地后端后会生成诊断日志。");
+            Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+        }
+        catch (Exception error) { Model.ShowError(error); }
     }
     private async void Reconnect(object sender, RoutedEventArgs args) => await Run(Model.ConnectAsync);
+
+    // ── Window lifetime ─────────────────────────────────────────────────────
+
+    private void RestoreFromTray()
+    {
+        if (closed) return;
+        AppWindow.Show();
+        if (AppWindow.Presenter is OverlappedPresenter presenter
+            && presenter.State == OverlappedPresenterState.Minimized) presenter.Restore();
+        Activate();
+        WinUIEx.WindowExtensions.SetForegroundWindow(this);
+    }
+
+    private void ExitFromTray()
+    {
+        if (closing || closed) return;
+        forceExit = true;
+        RestoreFromTray();
+        Close();
+    }
 
     private async void Closing(AppWindow sender, AppWindowClosingEventArgs args)
     {
         if (closed) return;
         args.Cancel = true;
         if (closing) return;
-        closing = true; contextClock.Stop(); contextRevision++;
-        StartButton.IsEnabled = false; ImportButton.IsEnabled = false;
-        Title = "言川 · 正在保存并退出…";
         try
         {
-            await Model.Backend.DisposeAsync();
-            closed = true; captions?.Close(); Close();
+            await lifetime.CloseAsync(Model.Configuration.CloseToTray && !forceExit && verifyFile is null,
+                () => { tray.Show(); tray.Update(Model.Status); AppWindow.Hide(); },
+                async () =>
+                {
+                    contextClock.Stop(); recordClock.Stop(); contextRevision++;
+                    StartButton.IsEnabled = false; ImportButton.IsEnabled = false;
+                    Title = "言川 · 正在保存并退出…";
+                    AppTitleDetail.Text = "正在保存并退出…";
+                    await Model.Backend.DisposeAsync();
+                },
+                () => { tray.Dispose(); captions?.Close(); Close(); });
         }
-        catch (Exception error) { closing = false; Model.ShowError(error); }
+        catch (Exception error) { forceExit = false; RestoreFromTray(); Model.ShowError(error); }
     }
+
+    // ── Silent verification ─────────────────────────────────────────────────
 
     private async Task VerifyAsync(string file)
     {

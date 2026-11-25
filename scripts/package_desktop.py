@@ -12,6 +12,7 @@ import zipfile
 from datetime import UTC, datetime
 from importlib import metadata
 from pathlib import Path
+from urllib.parse import urlsplit
 from xml.etree import ElementTree
 
 from packaging.requirements import Requirement
@@ -157,6 +158,15 @@ def copy_python(root, output, *, dependency_roots=None):
     return versions
 
 
+def loopback_url(value):
+    """Loopback endpoints such as the public default base URL reveal nothing private."""
+    try:
+        host = urlsplit(value).hostname
+    except ValueError:
+        return False
+    return host in {"localhost", "::1"} or (host or "").startswith("127.")
+
+
 def local_secrets(root):
     settings = root / "data/meeting-settings.json"
     if not settings.is_file():
@@ -166,6 +176,8 @@ def local_secrets(root):
         if isinstance(value, dict):
             for key, item in value.items():
                 if key in {"api_key", "base_url"} and isinstance(item, str) and len(item) >= 12:
+                    if key == "base_url" and loopback_url(item):
+                        continue
                     yield item.encode("utf-8")
                 else:
                     yield from collect(item)
@@ -252,6 +264,9 @@ def main():
         action="store_true",
         help="Resume an unarchived build directory with a runtime marker",
     )
+    parser.add_argument(
+        "--no-archive", action="store_true", help="Build an audited installer payload without a ZIP"
+    )
     args = parser.parse_args()
     root = args.root.resolve()
     version = application_version(root)
@@ -333,6 +348,19 @@ def main():
     (output / "release-manifest.json").write_text(
         json.dumps(report, ensure_ascii=False, indent=2), "utf-8"
     )
+    if args.no_archive:
+        print(
+            json.dumps(
+                {
+                    "directory": str(output),
+                    "payload_bytes": report["bytes"],
+                    "credential_scan_passed": True,
+                },
+                ensure_ascii=False,
+            ),
+            flush=True,
+        )
+        return
     print(
         f"Packing {len(report['files'])} files / {report['bytes'] / 1024**3:.2f} GiB...", flush=True
     )

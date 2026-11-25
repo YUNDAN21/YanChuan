@@ -7,14 +7,19 @@
   </PropertyGroup>
   <ItemGroup>
     <Compile Remove="SelectionApp/**/*.cs" />
+    <Compile Remove="TrayApp/**/*.cs" />
+    <Compile Include="../Services/WindowLifetime.cs" Link="WindowLifetime.cs" />
     <Compile Include="../Models/Contracts.cs" Link="Contracts.cs" />
+    <Compile Include="../Models/ApiProfilePreset.cs" Link="ApiProfilePreset.cs" />
     <Compile Include="../Services/IBackendClient.cs" Link="IBackendClient.cs" />
     <Compile Include="../Services/ApplicationPaths.cs" Link="ApplicationPaths.cs" />
+    <Compile Include="../Services/ThemeCache.cs" Link="ThemeCache.cs" />
     <Compile Include="../Services/BackendClient.cs" Link="BackendClient.cs" />
     <Compile Include="../ViewModels/DesktopViewModel.cs" Link="DesktopViewModel.cs" />
     <Compile Include="../ViewModels/NotesViewModel.cs" Link="NotesViewModel.cs" />
     <Compile Include="../ViewModels/SubtitleProjection.cs" Link="SubtitleProjection.cs" />
     <Compile Include="../ViewModels/CaptionChromeState.cs" Link="CaptionChromeState.cs" />
+    <Compile Include="../ViewModels/MeetingListProjection.cs" Link="MeetingListProjection.cs" />
     <Compile Include="../Rendering/MarkdownDocument.cs" Link="MarkdownDocument.cs" />
     <Compile Include="../Rendering/MarkdownClipboard.cs" Link="MarkdownClipboard.cs" />
     <Compile Include="../Rendering/SelectionScrollSpeed.cs" Link="SelectionScrollSpeed.cs" />

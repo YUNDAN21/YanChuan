@@ -23,12 +23,17 @@ def test_real_process_rename_full_copy_and_chat_events(tmp_path):
 
         def do_POST(self):
             received.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            task = json.loads(
+                received[-1]["messages"][-1]["content"].split("查阅任务（JSON）：\n")[-1]
+            )
+            if task["phase"] == "route":
+                action = {"mode": "targeted"}
+            elif task["phase"] == "research" and len(received) == 2:
+                action = {"action": "read", "cursor": 0}
+            else:
+                action = {"action": "answer", "text": "周五完成。[00:00:03]", "citations": [0]}
             response = json.dumps(
-                {
-                    "choices": [
-                        {"finish_reason": "stop", "message": {"content": "周五完成。[00:00:03]"}}
-                    ]
-                }
+                {"choices": [{"finish_reason": "stop", "message": {"content": json.dumps(action)}}]}
             ).encode()
             self.send_response(200)
             self.end_headers()
@@ -84,10 +89,18 @@ def test_real_process_rename_full_copy_and_chat_events(tmp_path):
         conversation = call(7, "chat.list")
         assert conversation["meeting_id"] == meeting_id
         assert conversation["messages"][-1]["request_id"] == request["request_id"]
-        assert "周五完成验收。" * 2000 in received[0]["messages"][1]["content"]
+        assert "周五完成验收。" * 2000 not in str(received)
+        assert "周五完成验收。" in str(received[-1])
+        assert any(
+            "单次请求" in e["payload"].get("activity", "")
+            for e in events
+            if e["name"] == "chat.updated"
+        )
+        assert len(received) == 1
         assert call(8, "snapshot")["meeting"]["metadata"]["summary_cursor"] == 0
         note = call(81, "notes.from_chat", meeting_id=meeting_id, request_id=request["request_id"])
-        assert note["content"] == "周五完成。[00:00:03]"
+        assert note["content"].startswith("周五完成。[00:00:03]")
+        assert "来源：[00:00:03–00:00:06]" in note["content"]
         assert call(82, "notes.groups")[0]["meeting_id"] == meeting_id
         call(83, "notes.update", note_id=note["id"], title="笔记新名", content="整理后的文字")
         assert call(84, "notes.list", group_id=note["group_id"])[0]["title"] == "笔记新名"

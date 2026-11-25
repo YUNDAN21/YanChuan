@@ -9,7 +9,7 @@ from pathlib import Path
 
 PATTERNS = {
     "possible_api_token": re.compile(
-        r"\b(?:sk-[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}"
+        r"\b(?:sk-[A-Za-z0-9_-]{20,}|nb_[A-Za-z0-9_-]{20,}|gh[pousr]_[A-Za-z0-9]{20,}"
         r"|github_pat_[A-Za-z0-9_]{20,}|AKIA[A-Z0-9]{16})"
     ),
     "private_key": re.compile(r"-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----"),

@@ -50,7 +50,7 @@ public sealed partial class CaptionWindow : Window
         }
         History.ItemsSource = rows;
         model.Changed += Changed;
-        Root.Loaded += (_, _) =>
+        Root.Loaded += async (_, _) =>
         {
             ResizeWindow(center: true);
             initialized = true;
@@ -61,11 +61,14 @@ public sealed partial class CaptionWindow : Window
             if (scroll is not null) scroll.ViewChanged += (_, _) =>
                 following = scroll.ScrollableHeight - scroll.VerticalOffset < 36;
             Changed("captions");
+            try { await model.WatchCaptionsAsync(true); }
+            catch (Exception error) { if (!disposed) Status.Text = error.Message; }
         };
         Closed += async (_, _) =>
         {
             disposed = true; model.Changed -= Changed;
             hoverTimer.Stop(); surface.Dispose();
+            try { await model.WatchCaptionsAsync(false); } catch (Exception) { }
             if (model.Active && model.Mode == "captions")
                 try { await model.Backend.CallAsync("session.stop"); } catch (Exception) { }
         };
@@ -74,8 +77,7 @@ public sealed partial class CaptionWindow : Window
     public void ApplyTheme(ElementTheme theme)
     {
         Root.RequestedTheme = theme;
-        AppWindow.TitleBar.ButtonBackgroundColor = Microsoft.UI.Colors.Transparent;
-        AppWindow.TitleBar.ButtonForegroundColor = theme == ElementTheme.Dark ? Microsoft.UI.Colors.White : Microsoft.UI.Colors.Black;
+        WindowChrome.ApplyCaptionButtons(AppWindow, theme);
         if (initialized) ApplyChrome();
     }
 
@@ -119,8 +121,7 @@ public sealed partial class CaptionWindow : Window
     {
         chromeVisible = chrome.Visible;
         Root.Background = !chromeVisible ? new SolidColorBrush(Microsoft.UI.Colors.Transparent)
-            : new SolidColorBrush(Root.ActualTheme == ElementTheme.Dark
-                ? Microsoft.UI.ColorHelper.FromArgb(255, 32, 32, 32) : Microsoft.UI.ColorHelper.FromArgb(255, 243, 243, 243));
+            : new SolidColorBrush(WindowChrome.Background(Root.ActualTheme));
         foreach (var control in new UIElement[] { HeaderChrome, CaptureControls, Footer })
         {
             control.Opacity = chromeVisible ? 1 : 0;
@@ -161,7 +162,7 @@ public sealed partial class CaptionWindow : Window
         IconActions.Describe(StartButton, running ? "停止字幕" : "开始字幕");
         SourcePicker.IsEnabled = LanguagePicker.IsEnabled = !model.Active;
         Status.Text = model.Error.Length > 0 ? model.Error : model.TranslationStatus.Length > 0 ? model.TranslationStatus : model.Status;
-        if (kind is "captions" or "snapshot" or "finished" or "translation" or "translation.units"
+        if (kind is "captions" or "captions.reset" or "snapshot" or "finished" or "translation" or "translation.units"
             or "translation.reset" or "configuration") RequestRender();
     }
 

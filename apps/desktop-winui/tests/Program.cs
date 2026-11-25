@@ -23,11 +23,23 @@ Check(ApplicationPaths.DataRoot(bundle, localData, "explicit") == "explicit", "E
 File.Delete(Path.Combine(bundle, "yanchuan.runtime.json"));
 File.WriteAllText(Path.Combine(bundle, "livecaptions.runtime.json"), "{}");
 Check(ApplicationPaths.FindMarker(bundle) is not null, "Legacy runtime marker not recognized");
+var themeCache = ApplicationPaths.ThemeCachePath(bundle);
+Check(ThemeCache.Read(themeCache) is null, "Missing theme cache was not ignored");
+ThemeCache.Write(themeCache, "dark");
+Check(ThemeCache.Read(themeCache) == "dark", "Theme cache was not kept");
+ThemeCache.Write(themeCache, "light");
+Check(ThemeCache.Read(themeCache) == "light", "Theme cache was not replaced");
+ThemeCache.Write(themeCache, "blue");
+Check(ThemeCache.Read(themeCache) == "light", "Invalid theme reached the cache");
+File.WriteAllText(themeCache, "garbage");
+Check(ThemeCache.Read(themeCache) is null, "Corrupt theme cache was trusted");
 Check(Path.GetFullPath(brandingRoot).StartsWith(Path.GetFullPath(Path.GetTempPath()), StringComparison.OrdinalIgnoreCase),
     "Temporary branding fixture escaped its workspace");
 Directory.Delete(brandingRoot, recursive: true);
 MarkdownChecks.Run(Path.Combine(Path.GetTempPath(), "livecaptions-markdown-checks"));
 await SourceSwitchChecks.RunAsync();
+MeetingListChecks.Run();
+await WindowLifetimeChecks.RunAsync();
 var contextUsage = new ChatContextUsage("m", 4000, 4096, 8096, 8192, false);
 Check(contextUsage.Percent > 98 && contextUsage.Percent < 99, "Context ring ratio omitted output reserve");
 Check(contextUsage.Description.Contains("8,192") && contextUsage.Description.Contains("4,096"), "Context tooltip missing limit/reserve");
@@ -40,13 +52,53 @@ fake.CurrentMeeting = "a";
 fake.Emit("meeting.loaded", sampleMeeting);
 fake.Emit("chat.updated", new ChatConversation("a", [new(1, "req", "assistant", "", "pending", "", "model", "", 0)]));
 Check(viewModel.ChatBusy, "Chat pending state missing");
+fake.Emit("chat.updated", new ChatConversation("a", [], Activity: "正在搜索会议原文…", ActivityRequestId: "req"));
+Check(viewModel.ChatActivity == "正在搜索会议原文…", "Agent activity did not reach the view model");
+fake.Emit("chat.updated", new ChatConversation("a", [], Activity: "错误请求", ActivityRequestId: "old"));
+Check(viewModel.ChatActivity == "正在搜索会议原文…", "An unrelated request changed the activity");
 fake.Emit("chat.updated", new ChatConversation("other", [new(1, "req", "assistant", "wrong meeting", "completed", "", "model", "", 0)]));
 Check(viewModel.ChatBusy && viewModel.ChatMessages[0].Text == "", "Cross-meeting answer leaked");
+fake.Emit("chat.preview", new ChatPreview("a", "req", "正确", 1));
+Check(viewModel.ChatBusy && viewModel.ChatPreviewText == "正确" && viewModel.ChatMessages[0].Text == "",
+    "Preview did not arrive independently of the final answer");
+fake.Emit("chat.preview", new ChatPreview("a", "req", "正确回", 2));
+fake.Emit("chat.updated", new ChatConversation("a", [], Preview: new("a", "req", "过期", 1)));
+fake.Emit("chat.preview", new ChatPreview("other", "req", "其他会议", 3));
+fake.Emit("chat.preview", new ChatPreview("a", "other", "其他请求", 4));
+Check(viewModel.ChatPreviewText == "正确回", "A stale or unrelated preview changed the current answer");
 fake.Emit("chat.updated", new ChatConversation("a", [new(1, "req", "assistant", "正确回答", "completed", "", "model", "", 0)]));
+fake.Emit("chat.preview", new ChatPreview("a", "req", "迟到增量", 5));
+Check(viewModel.ChatActivity == "" && viewModel.ChatPreviewText == "",
+    "Completed answer retained activity or preview state");
+fake.Emit("chat.updated", new ChatConversation("a", [], Activity: "迟到进度", ActivityRequestId: "req"));
+Check(viewModel.ChatActivity == "", "Late activity replaced the completed answer state");
 fake.Emit("chat.updated", new ChatConversation("a", [new(1, "req", "assistant", "", "pending", "", "model", "", 0)]));
 Check(!viewModel.ChatBusy && viewModel.ChatMessages.Count == 1 && viewModel.ChatMessages[0].Text == "正确回答", "Stale history replaced final answer");
+fake.Emit("chat.updated", new ChatConversation("a", [], new(Status: "compressing", Revision: 1)));
+Check(viewModel.ChatBusy, "Compression must disable sending and allow cancellation");
+fake.Emit("chat.updated", new ChatConversation("other", [], new(Summary: "wrong", Revision: 99)));
+Check(viewModel.ChatContext.Summary == "", "Cross-meeting chat memory leaked");
+fake.Emit("chat.updated", new ChatConversation("a", [], new(Summary: "摘要", Status: "completed", Revision: 2)));
+Check(!viewModel.ChatBusy && viewModel.ChatMessages[0].Text == "正确回答",
+    "Compression changed displayed original history or retained busy state");
+fake.Emit("chat.updated", new ChatConversation("a", [], new(Status: "compressing", Revision: 1)));
+Check(!viewModel.ChatBusy && viewModel.ChatContext.Summary == "摘要",
+    "Stale context response replaced completed compression");
+var splitUsage = new ChatContextUsage("a", 9000, 4096, 13096, 8192, true,
+    MeetingTokens: 8500, HistoryTokens: 300, QuestionTokens: 10, SourceTokens: 900000, ToolTokens: 2048, RetrievalMode: true);
+Check(splitUsage.Description.Contains("8,500") && splitUsage.Description.Contains("按需读取"),
+    "Context tooltip omitted meeting budget diagnosis");
 fake.Emit("meeting.renamed", sampleMeeting.Metadata with { Title = "新名" });
 Check(viewModel.MeetingTitle == "新名", "Rename event was not projected");
+fake.Emit("summary.export", "导出失败");
+Check(viewModel.ExportError == "导出失败", "Export warning was not projected");
+fake.Emit("summary.export", "");
+Check(viewModel.ExportError == "", "Successful retry did not clear export warning");
+fake.Emit("translation.units", new { units = new[] { new TranslationUnit("old", "旧字幕", 0, "zh", false) }, removed = Array.Empty<string>() });
+Check(viewModel.TranslationUnits.Count == 1, "Fixture translation unit missing");
+fake.Emit("captions.reset", (object?)null);
+Check(viewModel.TranslationUnits.Count == 0 && viewModel.Captions.Count == 0
+    && viewModel.Translations.Count == 0 && viewModel.Pending is null, "Session reset retained stale captions");
 viewModel.Meetings.Add(new("meeting-a", "新名", "2026-10-27", "ended"));
 viewModel.Meetings.Add(new("meeting-b", "另一个会议", "2026-10-27", "ended"));
 fake.Emit("meeting.deleted", new DeletedMeeting("b", "meeting-b", "另一个会议", false));
@@ -74,6 +126,11 @@ var pair = SubtitleProjection.Compact(subtitleSettings, units, translationResult
 Check(pair.Top == "second" && pair.Bottom == "第二句", "Bilingual pairing failed");
 translationResults["a"] = new("a", "first", "第一句", "zh", 0, false, "ready", "", 0);
 Check(SubtitleProjection.Compact(subtitleSettings, units, translationResults) == pair, "Late translation regressed captions");
+units.Add(new("c", "new untranslated source", 2, "en", false));
+var pendingPair = SubtitleProjection.Compact(subtitleSettings, units, translationResults);
+Check(pendingPair.Top == "new untranslated source" && pendingPair.Bottom == "翻译中…",
+    "Pending translation froze the previous source");
+units.RemoveAt(2);
 subtitleSettings.DisplayMode = "translated";
 pair = SubtitleProjection.Compact(subtitleSettings, units, translationResults);
 Check(pair.Top == "第一句" && pair.Bottom == "第二句", "Translation-only view exposed source text");
@@ -93,6 +150,17 @@ await using (var client = new BackendClient(root, temporary))
     Check(emptyUsage.MeetingId is null && emptyUsage.ContextTokens == 272000 && emptyUsage.TotalTokens > 4096,
         "Context estimate JSONL contract failed");
     Check(hello.Protocol == 1 && !hello.Snapshot.Active, "Handshake failed");
+    Check(!hello.Configuration.CloseToTray, "Tray behavior must default to closing");
+    await client.CallAsync("window.configure", new { close_to_tray = true });
+    var windowConfiguration = WireJson.Read<Configuration>(await client.CallAsync("configuration.get"));
+    Check(windowConfiguration.CloseToTray, "Tray preference did not roundtrip");
+    await client.CallAsync("appearance.set", new { mode = "dark" });
+    Check(WireJson.Read<Configuration>(await client.CallAsync("configuration.get")).CloseToTray,
+        "Theme switch cleared tray preference");
+    Check((await client.CallAsync("captions.watch", new { enabled = true })).GetBoolean(),
+        "Caption watch subscription failed");
+    Check(!(await client.CallAsync("captions.watch", new { enabled = false })).GetBoolean(),
+        "Caption watch unsubscribe failed");
     var cpuInventory = WireJson.Read<ModelInventory>(await client.CallAsync("models.configure",
         new { selected_model = "qwen-0.6b", device = "cpu" }));
     Check(cpuInventory.Settings.Device == "cpu", "CPU selection did not roundtrip");
@@ -134,6 +202,49 @@ await using (var client = new BackendClient(root, temporary))
     var chatOptions = WireJson.Read<Configuration>(await client.CallAsync("configuration.get"));
     Check(chatOptions.ChatModel == "independent-model" && chatOptions.ChatReasoningEffort == "high"
         && chatOptions.ChatContextTokens == 16384, "Partial chat options lost model/effort");
+    var presetProfiles = ApiProfilePreset.Providers.Select(preset => preset.CreateDraft()).ToList();
+    var deepSeek = presetProfiles.Single(profile => profile.Name == "DeepSeek");
+    var siliconFlow = presetProfiles.Single(profile => profile.Name == "硅基流动");
+    Check(deepSeek.Protocol == "chat_completions" && siliconFlow.Protocol == "chat_completions",
+        "DeepSeek and SiliconFlow must start with the Chat Completions protocol");
+    Check(presetProfiles.All(profile => profile.Connection == "http" && profile.ApiKey == "" && profile.Model == ""),
+        "API preset drafts must start with independent HTTP credentials and model selection");
+    deepSeek.ApiKey = "local-test-credential";
+    deepSeek.Model = "fixture-chat-model";
+    var anotherDraft = ApiProfilePreset.Providers.Single(preset => preset.Name == deepSeek.Name).CreateDraft();
+    Check(anotherDraft.Id != deepSeek.Id && anotherDraft.ApiKey == "" && anotherDraft.Model == "",
+        "Creating a second API draft inherited the first draft's settings");
+    var customProtocols = new Dictionary<string, string>
+    {
+        ["Chat Completions"] = "chat_completions", ["Responses"] = "responses", ["Anthropic Messages"] = "anthropic",
+    };
+    var customProfiles = ApiProfilePreset.Protocols.Select(preset => preset.CreateDraft()).ToList();
+    Check(customProfiles.Count == customProtocols.Count && customProfiles.All(profile =>
+        profile.Connection == "http" && profile.BaseUrl == "" && profile.Name == ApiProfilePreset.TypeLabel(profile)
+        && customProtocols[profile.Name] == profile.Protocol), "Custom connection choices use the wrong protocol or address");
+    foreach (var profile in customProfiles) profile.BaseUrl = "http://127.0.0.1:1234/v1";
+
+    var profiles = new List<ApiProfile>(chatOptions.ApiProfiles);
+    foreach (var agent in ApiProfilePreset.Agents)
+    {
+        var profile = agent.CreateDraft();
+        profile.Id = profile.Connection;
+        profiles.Add(profile);
+    }
+    profiles.AddRange(presetProfiles);
+    profiles.AddRange(customProfiles);
+    await client.CallAsync("profiles.save", new { profiles, selected_id = deepSeek.Id });
+    var savedProfileOptions = WireJson.Read<Configuration>(await client.CallAsync("configuration.get"));
+    Check(savedProfileOptions.SelectedApiProfile == deepSeek.Id && presetProfiles.Concat(customProfiles).All(preset =>
+        savedProfileOptions.ApiProfiles.Any(profile => profile.Id == preset.Id && profile.Name == preset.Name
+            && profile.BaseUrl == preset.BaseUrl && profile.Protocol == preset.Protocol)),
+        "API preset fields did not roundtrip through the real backend");
+    await client.CallAsync("profiles.save", new { profiles, selected_id = "codex" });
+    await client.CallAsync("chat.configure", new { api_profile_id = "agy", model = "independent-model" });
+    var agentOptions = WireJson.Read<Configuration>(await client.CallAsync("configuration.get"));
+    Check(agentOptions.SelectedApiProfile == "codex" && agentOptions.ChatApiProfile == "agy"
+        && agentOptions.ApiProfiles.Count(profile => profile.UsesLocalAgent) == 2,
+        "Local agent profile selection did not roundtrip");
     await client.CallAsync("captions.configure", new CaptionSettings { Enabled = false,
         DisplayMode = "translated", TargetLanguage = "ja" });
     var captionConfiguration = WireJson.Read<Configuration>(await client.CallAsync("configuration.get"));
@@ -166,7 +277,9 @@ await using (var client = new BackendClient(root, temporary))
     Check(WireJson.Read<ModelInventory>(await client.CallAsync("models.list")).Settings.Device == "cpu",
         "Inference device did not survive backend restart");
     Check(hello.Configuration.ChatModel == "independent-model"
-        && hello.Configuration.ChatReasoningEffort == "high", "Chat options did not survive restart");
+        && hello.Configuration.ChatReasoningEffort == "high"
+        && hello.Configuration.SelectedApiProfile == "codex" && hello.Configuration.ChatApiProfile == "agy",
+        "Chat options did not survive restart");
     var disconnected = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
     client.Disconnected += _ => disconnected.TrySetResult();
     await client.CallAsync("shutdown");
@@ -189,7 +302,7 @@ sealed class MeetingBackend : IBackendClient
     public Task<JsonElement> CallAsync(string method, object? parameters = null) => Task.FromResult(
         method == "chat.list" ? JsonSerializer.SerializeToElement(new ChatConversation(CurrentMeeting, []), WireJson.Options)
         : JsonSerializer.SerializeToElement(Array.Empty<object>()));
-    public void Emit(string name, object value) => EventReceived?.Invoke(new BackendEvent(++sequence,
+    public void Emit(string name, object? value) => EventReceived?.Invoke(new BackendEvent(++sequence,
         null, name, JsonSerializer.SerializeToElement(value, WireJson.Options)));
     public void Disconnect() => Disconnected?.Invoke("test disconnect");
     public ValueTask DisposeAsync() => ValueTask.CompletedTask;

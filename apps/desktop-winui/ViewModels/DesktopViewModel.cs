@@ -19,7 +19,11 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
     public ObservableCollection<MeetingItem> Meetings { get; } = [];
     public ObservableCollection<ChatMessage> ChatMessages { get; } = [];
     public string MeetingId { get; private set; } = "";
-    public bool ChatBusy => ChatMessages.Any(m => m.Status == "pending");
+    public string ChatActivity { get; private set; } = "";
+    private ChatPreview? chatPreview;
+    public string ChatPreviewText => chatPreview?.Text ?? "";
+    public ChatContextState ChatContext { get; private set; } = new();
+    public bool ChatBusy => ChatContext.Compressing || ChatMessages.Any(m => m.Status == "pending");
     public List<DeviceInfo> Devices { get; private set; } = [];
     public Configuration Configuration { get; private set; } = new();
     public List<TranslationUnit> TranslationUnits { get; } = [];
@@ -28,6 +32,8 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
     public CaptionEntry? Pending { get; private set; }
     public string Directory { get; private set; } = "";
     public string MeetingTitle { get; private set; } = "";
+    public string MeetingStartedAt { get; private set; } = "";
+    public string? MeetingEndedAt { get; private set; }
     public string State { get; private set; } = "idle";
     public string Mode { get; private set; } = "idle";
     public bool Active { get; private set; }
@@ -40,6 +46,8 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
     public string Status { get; private set; } = "正在连接本地后端…";
     public string SummaryStatus { get; private set; } = "只总结新增内容，原始转写自动保存";
     public string Error { get; private set; } = "";
+    public string ExportError { get; private set; } = "";
+    private bool captionsWatched;
     public string LiveText => Pending?.Text ?? (Active ? "正在聆听…" : "等待开始");
     private long sequence;
 
@@ -49,7 +57,7 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
         backend.EventReceived += value => Post(() => Apply(value));
         backend.Disconnected += message => Post(() =>
         {
-            Connected = false; Active = false; SummaryBusy = false;
+            Connected = false; Active = false; SummaryBusy = false; chatPreview = null;
             Status = "后端已断开"; Error = message; Notify("connection");
         });
     }
@@ -62,7 +70,16 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
         Connected = true; Error = ""; Notify("configuration");
         await RefreshMeetingsAsync();
         await RefreshDevicesAsync();
+        if (captionsWatched) await WatchCaptionsAsync(true);
     }
+
+    public async Task WatchCaptionsAsync(bool enabled)
+    {
+        captionsWatched = enabled;
+        if (Connected) await Backend.CallAsync("captions.watch", new { enabled });
+    }
+
+    public async Task RetryExportAsync() => await Backend.CallAsync("meetings.export");
 
     public async Task RefreshDevicesAsync()
     {
@@ -134,9 +151,13 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
             string.Equals(item.Directory, deleted.Directory, StringComparison.OrdinalIgnoreCase)).ToList())
             Meetings.Remove(item);
         if (MeetingId != deleted.Id) return;
-        Directory = MeetingTitle = MeetingId = "";
+        Directory = MeetingTitle = MeetingId = MeetingStartedAt = "";
+        MeetingEndedAt = null;
         Entries.Clear(); Summaries.Clear(); ChatMessages.Clear();
+        chatPreview = null;
+        ChatContext = new(); ChatActivity = "";
         SummaryBusy = false; SummaryStatus = ""; Error = "";
+        ExportError = "";
     }
 
     public async Task RefreshChatAsync()
@@ -154,9 +175,22 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
         if (question is not null) await SendChatAsync(question.Text);
     }
 
+    private bool AwaitingAnswer(string requestId) => ChatMessages.Any(m =>
+        m.RequestId == requestId && m.Role == "assistant" && m.Status == "pending");
+
+    private bool ApplyChatPreview(ChatPreview preview)
+    {
+        if (preview.MeetingId != MeetingId || !AwaitingAnswer(preview.RequestId)) return false;
+        if (chatPreview?.RequestId == preview.RequestId && chatPreview.Revision >= preview.Revision) return false;
+        chatPreview = preview;
+        return true;
+    }
+
     private void LoadChat(ChatConversation conversation)
     {
         if (conversation.MeetingId != MeetingId) return;
+        if (conversation.Context is { } context && context.Revision >= ChatContext.Revision)
+            ChatContext = context;
         foreach (var message in conversation.Messages)
         {
             var old = ChatMessages.FirstOrDefault(m => m.Id == message.Id);
@@ -164,6 +198,11 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
             else if (old.Status != "pending" && message.Status == "pending") continue;
             else if (old != message) ChatMessages[ChatMessages.IndexOf(old)] = message;
         }
+        if (chatPreview is not null && !AwaitingAnswer(chatPreview.RequestId)) chatPreview = null;
+        if (conversation.Preview is not null) ApplyChatPreview(conversation.Preview);
+        if (conversation.ActivityRequestId.Length > 0 && AwaitingAnswer(conversation.ActivityRequestId))
+            ChatActivity = conversation.Activity;
+        else if (!ChatMessages.Any(m => m.Status == "pending")) ChatActivity = "";
         Notify("chat");
     }
 
@@ -180,10 +219,15 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
         {
             case "state":
                 SessionId = value.SessionId;
+                var previous = State;
                 State = value.Payload.GetProperty("state").GetString()!;
                 Mode = value.Payload.GetProperty("mode").GetString()!;
                 Active = value.Payload.GetProperty("active").GetBoolean();
-                Status = StateLabel(State); break;
+                Status = StateLabel(State);
+                // A new meeting is listed as soon as it records, so the sidebar shows what is being captured.
+                if (State == "recording" && previous != "recording" && Mode != "captions")
+                    _ = RefreshAfterFinishAsync();
+                break;
             case "session.source":
                 if (value.SessionId != SessionId) break;
                 AudioSource = WireJson.Read<AudioSourceState>(value.Payload);
@@ -196,12 +240,20 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
                 break;
             case "meeting.deleted": ApplyDeletion(WireJson.Read<DeletedMeeting>(value.Payload)); break;
             case "chat.updated": LoadChat(WireJson.Read<ChatConversation>(value.Payload)); break;
+            case "chat.preview":
+                if (ApplyChatPreview(WireJson.Read<ChatPreview>(value.Payload)))
+                    Changed?.Invoke("chat.preview");
+                return;
             case "transcript": Entries.Add(WireJson.Read<TranscriptEntry>(value.Payload)); break;
             case "captions":
                 foreach (var item in WireJson.Read<List<CaptionEntry>>(value.Payload.GetProperty("confirmed")))
                     Captions.Add(item);
                 var pending = value.Payload.GetProperty("pending");
                 Pending = pending.ValueKind == JsonValueKind.Null ? null : WireJson.Read<CaptionEntry>(pending);
+                break;
+            case "captions.reset":
+                Captions.Clear(); Pending = null;
+                TranslationUnits.Clear(); Translations.Clear(); TranslationStatus = "";
                 break;
             case "translation.units":
                 var removed = WireJson.Read<List<string>>(value.Payload.GetProperty("removed"));
@@ -224,6 +276,7 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
             case "summary.busy": SummaryBusy = value.Payload.GetBoolean();
                 if (SummaryBusy) SummaryStatus = "正在总结…"; break;
             case "summary.error": SummaryStatus = value.Payload.GetString() ?? "总结失败"; break;
+            case "summary.export": ExportError = value.Payload.GetString() ?? ""; break;
             case "error": Error = value.Payload.GetString() ?? "操作失败"; break;
             case "configuration": Configuration = WireJson.Read<Configuration>(value.Payload); break;
             case "appearance": Configuration.Appearance = value.Payload.GetString()!; break;
@@ -264,8 +317,12 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
         if (value.Meeting is not null) LoadMeeting(value.Meeting);
         else
         {
-            Directory = MeetingTitle = MeetingId = "";
+            Directory = MeetingTitle = MeetingId = MeetingStartedAt = "";
+            MeetingEndedAt = null;
             Entries.Clear(); Summaries.Clear(); ChatMessages.Clear();
+            chatPreview = null;
+            ChatContext = new(); ChatActivity = "";
+            ExportError = "";
         }
         Notify("snapshot");
     }
@@ -273,6 +330,10 @@ public sealed class DesktopViewModel : INotifyPropertyChanged
     private void LoadMeeting(MeetingData value)
     {
         Directory = value.Directory; MeetingTitle = value.Metadata.Title; MeetingId = value.Metadata.Id;
+        MeetingStartedAt = value.Metadata.StartedAt; MeetingEndedAt = value.Metadata.EndedAt;
+        ExportError = value.ExportError;
+        ChatContext = new(); ChatActivity = "";
+        chatPreview = null;
         ChatMessages.Clear();
         Entries.Clear(); Summaries.Clear();
         foreach (var entry in value.Entries) Entries.Add(entry);

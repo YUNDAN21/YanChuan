@@ -21,7 +21,7 @@ public static class CaptionTranslationDialog
         language.SelectedIndex = Array.IndexOf(languages, current.TargetLanguage);
         var api = new ComboBox { Header = "翻译 API", DisplayMemberPath = "Name", HorizontalAlignment = HorizontalAlignment.Stretch };
         var profiles = new List<ApiProfile> { new() { Id = "", Name = "跟随当前 API 选择" } };
-        profiles.AddRange(configuration.ApiProfiles);
+        profiles.AddRange(configuration.ApiProfiles.Where(profile => !profile.UsesLocalAgent));
         api.ItemsSource = profiles;
         api.SelectedItem = profiles.FirstOrDefault(p => p.Id == (current.ApiProfileId ?? "")) ?? profiles[0];
         var error = new TextBlock { TextWrapping = TextWrapping.Wrap };

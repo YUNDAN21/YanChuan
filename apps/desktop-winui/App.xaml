@@ -6,15 +6,201 @@
       <ResourceDictionary.MergedDictionaries>
         <XamlControlsResources xmlns="using:Microsoft.UI.Xaml.Controls" />
       </ResourceDictionary.MergedDictionaries>
-      <Style x:Key="ToolbarIconButtonStyle" TargetType="Button">
+      <ResourceDictionary.ThemeDictionaries>
+        <ResourceDictionary x:Key="Default">
+          <SolidColorBrush x:Key="RecordingForegroundBrush" Color="#FF8A80"/>
+          <SolidColorBrush x:Key="RecordingBackgroundBrush" Color="#24FF8A80"/>
+          <SolidColorBrush x:Key="DangerButtonBackground" Color="#C42B1C"/>
+          <SolidColorBrush x:Key="DangerButtonBackgroundPointerOver" Color="#D13A2B"/>
+          <SolidColorBrush x:Key="DangerButtonBackgroundPressed" Color="#A82416"/>
+          <SolidColorBrush x:Key="ChatBubbleBackgroundBrush" Color="#14FFFFFF"/>
+          <SolidColorBrush x:Key="BrandMarkFillBrush" Color="Black"/>
+          <SolidColorBrush x:Key="BrandMarkWaveBrush" Color="White"/>
+        </ResourceDictionary>
+        <ResourceDictionary x:Key="Light">
+          <SolidColorBrush x:Key="RecordingForegroundBrush" Color="#C42B1C"/>
+          <SolidColorBrush x:Key="RecordingBackgroundBrush" Color="#14C42B1C"/>
+          <SolidColorBrush x:Key="DangerButtonBackground" Color="#C42B1C"/>
+          <SolidColorBrush x:Key="DangerButtonBackgroundPointerOver" Color="#B3271A"/>
+          <SolidColorBrush x:Key="DangerButtonBackgroundPressed" Color="#9E2216"/>
+          <SolidColorBrush x:Key="ChatBubbleBackgroundBrush" Color="#0F000000"/>
+          <SolidColorBrush x:Key="BrandMarkFillBrush" Color="White"/>
+          <SolidColorBrush x:Key="BrandMarkWaveBrush" Color="Black"/>
+        </ResourceDictionary>
+      </ResourceDictionary.ThemeDictionaries>
+
+      <!-- Transparent buttons keep a transparent background when disabled; only the content fades.
+           The default Button template paints ButtonBackgroundDisabled, which showed grey blocks. -->
+      <Style x:Key="SubtleButtonStyle" TargetType="Button">
+        <Setter Property="Background" Value="Transparent"/>
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorPrimaryBrush}"/>
+        <Setter Property="BorderBrush" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="0"/>
+        <Setter Property="Padding" Value="8,5"/>
+        <Setter Property="HorizontalAlignment" Value="Left"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+        <Setter Property="HorizontalContentAlignment" Value="Center"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="FontFamily" Value="{ThemeResource ContentControlThemeFontFamily}"/>
+        <Setter Property="FontWeight" Value="Normal"/>
+        <Setter Property="FontSize" Value="{ThemeResource ControlContentThemeFontSize}"/>
+        <Setter Property="CornerRadius" Value="{ThemeResource ControlCornerRadius}"/>
+        <Setter Property="UseSystemFocusVisuals" Value="True"/>
+        <Setter Property="FocusVisualMargin" Value="-3"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <ContentPresenter x:Name="ContentPresenter"
+                  Background="{TemplateBinding Background}"
+                  BackgroundSizing="{TemplateBinding BackgroundSizing}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="{TemplateBinding CornerRadius}"
+                  Content="{TemplateBinding Content}"
+                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                  ContentTransitions="{TemplateBinding ContentTransitions}"
+                  Padding="{TemplateBinding Padding}"
+                  Foreground="{TemplateBinding Foreground}"
+                  HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                  VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                  AutomationProperties.AccessibilityView="Raw">
+                <ContentPresenter.BackgroundTransition><BrushTransition Duration="0:0:0.083"/></ContentPresenter.BackgroundTransition>
+                <VisualStateManager.VisualStateGroups>
+                  <VisualStateGroup x:Name="CommonStates">
+                    <VisualState x:Name="Normal"/>
+                    <VisualState x:Name="PointerOver">
+                      <VisualState.Setters><Setter Target="ContentPresenter.Background" Value="{ThemeResource SubtleFillColorSecondaryBrush}"/></VisualState.Setters>
+                    </VisualState>
+                    <VisualState x:Name="Pressed">
+                      <VisualState.Setters>
+                        <Setter Target="ContentPresenter.Background" Value="{ThemeResource SubtleFillColorTertiaryBrush}"/>
+                        <Setter Target="ContentPresenter.Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+                      </VisualState.Setters>
+                    </VisualState>
+                    <VisualState x:Name="Disabled">
+                      <VisualState.Setters><Setter Target="ContentPresenter.Foreground" Value="{ThemeResource TextFillColorDisabledBrush}"/></VisualState.Setters>
+                    </VisualState>
+                  </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+              </ContentPresenter>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <Style x:Key="ToolbarIconButtonStyle" TargetType="Button" BasedOn="{StaticResource SubtleButtonStyle}">
         <Setter Property="Width" Value="40"/>
         <Setter Property="Height" Value="40"/>
         <Setter Property="Padding" Value="10"/>
-        <Setter Property="Background" Value="Transparent"/>
-        <Setter Property="BorderThickness" Value="0"/>
-        <Setter Property="CornerRadius" Value="10"/>
+        <Setter Property="CornerRadius" Value="6"/>
         <Setter Property="HorizontalAlignment" Value="Center"/>
-        <Setter Property="VerticalAlignment" Value="Center"/>
+      </Style>
+
+      <!-- Small icon button inside cards and list rows. -->
+      <Style x:Key="CompactIconButtonStyle" TargetType="Button" BasedOn="{StaticResource SubtleButtonStyle}">
+        <Setter Property="Width" Value="32"/>
+        <Setter Property="Height" Value="32"/>
+        <Setter Property="Padding" Value="0"/>
+        <Setter Property="CornerRadius" Value="6"/>
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
+      </Style>
+
+      <!-- Full-width sidebar navigation row: icon + label. -->
+      <Style x:Key="NavigationRowButtonStyle" TargetType="Button" BasedOn="{StaticResource SubtleButtonStyle}">
+        <Setter Property="HorizontalAlignment" Value="Stretch"/>
+        <Setter Property="HorizontalContentAlignment" Value="Left"/>
+        <Setter Property="Height" Value="40"/>
+        <Setter Property="Padding" Value="12,0"/>
+        <Setter Property="CornerRadius" Value="6"/>
+      </Style>
+
+      <!-- Filled red button for destructive primary actions such as ending a meeting. -->
+      <Style x:Key="DangerButtonStyle" TargetType="Button" BasedOn="{StaticResource SubtleButtonStyle}">
+        <Setter Property="Background" Value="{ThemeResource DangerButtonBackground}"/>
+        <Setter Property="Foreground" Value="White"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="Button">
+              <ContentPresenter x:Name="ContentPresenter"
+                  Background="{TemplateBinding Background}"
+                  BackgroundSizing="{TemplateBinding BackgroundSizing}"
+                  BorderBrush="{TemplateBinding BorderBrush}"
+                  BorderThickness="{TemplateBinding BorderThickness}"
+                  CornerRadius="{TemplateBinding CornerRadius}"
+                  Content="{TemplateBinding Content}"
+                  ContentTemplate="{TemplateBinding ContentTemplate}"
+                  ContentTransitions="{TemplateBinding ContentTransitions}"
+                  Padding="{TemplateBinding Padding}"
+                  Foreground="{TemplateBinding Foreground}"
+                  HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                  VerticalContentAlignment="{TemplateBinding VerticalContentAlignment}"
+                  AutomationProperties.AccessibilityView="Raw">
+                <ContentPresenter.BackgroundTransition><BrushTransition Duration="0:0:0.083"/></ContentPresenter.BackgroundTransition>
+                <VisualStateManager.VisualStateGroups>
+                  <VisualStateGroup x:Name="CommonStates">
+                    <VisualState x:Name="Normal"/>
+                    <VisualState x:Name="PointerOver">
+                      <VisualState.Setters><Setter Target="ContentPresenter.Background" Value="{ThemeResource DangerButtonBackgroundPointerOver}"/></VisualState.Setters>
+                    </VisualState>
+                    <VisualState x:Name="Pressed">
+                      <VisualState.Setters><Setter Target="ContentPresenter.Background" Value="{ThemeResource DangerButtonBackgroundPressed}"/></VisualState.Setters>
+                    </VisualState>
+                    <VisualState x:Name="Disabled">
+                      <VisualState.Setters>
+                        <Setter Target="ContentPresenter.Background" Value="{ThemeResource AccentFillColorDisabledBrush}"/>
+                        <Setter Target="ContentPresenter.Foreground" Value="{ThemeResource TextOnAccentFillColorDisabledBrush}"/>
+                      </VisualState.Setters>
+                    </VisualState>
+                  </VisualStateGroup>
+                </VisualStateManager.VisualStateGroups>
+              </ContentPresenter>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <!-- In-app brand mark shared by the title bar and the meeting assistant. -->
+      <Style x:Key="BrandMarkStyle" TargetType="ContentControl">
+        <Setter Property="Width" Value="18"/>
+        <Setter Property="Height" Value="18"/>
+        <Setter Property="IsTabStop" Value="False"/>
+        <Setter Property="Template">
+          <Setter.Value>
+            <ControlTemplate TargetType="ContentControl">
+              <Viewbox>
+                <Grid Width="24" Height="24">
+                  <Rectangle Margin="1" RadiusX="6" RadiusY="6" Fill="{ThemeResource BrandMarkFillBrush}"
+                             Stroke="{ThemeResource CardStrokeColorDefaultBrush}" StrokeThickness="1"/>
+                  <Path Data="M8,9.5 L8,14.5 M12,7 L12,17 M16,10.5 L16,13.5" StrokeThickness="2.2"
+                        StrokeStartLineCap="Round" StrokeEndLineCap="Round" Stroke="{ThemeResource BrandMarkWaveBrush}"/>
+                </Grid>
+              </Viewbox>
+            </ControlTemplate>
+          </Setter.Value>
+        </Setter>
+      </Style>
+
+      <!-- Content layer cards: a header strip, body and footer strip separated by dividers. -->
+      <Style x:Key="CardBorderStyle" TargetType="Border">
+        <Setter Property="Background" Value="{ThemeResource CardBackgroundFillColorDefaultBrush}"/>
+        <Setter Property="BorderBrush" Value="{ThemeResource CardStrokeColorDefaultBrush}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="CornerRadius" Value="8"/>
+      </Style>
+      <Style x:Key="SettingCardStyle" TargetType="Border" BasedOn="{StaticResource CardBorderStyle}">
+        <Setter Property="Padding" Value="18,14"/>
+        <Setter Property="MinHeight" Value="68"/>
+      </Style>
+      <Style x:Key="SettingSectionTitleStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="14"/>
+        <Setter Property="FontWeight" Value="SemiBold"/>
+        <Setter Property="Margin" Value="0,18,0,6"/>
+      </Style>
+      <Style x:Key="SettingDescriptionStyle" TargetType="TextBlock">
+        <Setter Property="FontSize" Value="12"/>
+        <Setter Property="TextWrapping" Value="Wrap"/>
+        <Setter Property="Foreground" Value="{ThemeResource TextFillColorSecondaryBrush}"/>
       </Style>
     </ResourceDictionary>
   </Application.Resources>

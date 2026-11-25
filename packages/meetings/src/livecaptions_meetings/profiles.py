@@ -4,6 +4,7 @@ from dataclasses import dataclass, field, replace
 from uuid import uuid4
 
 from .client import SummarySettings
+from .local_agent import AGENT_LABELS, LocalAgentSettings
 from .prompts import SUMMARY_SYSTEM_PROMPT
 from .protocols import PROTOCOL_LABELS, validate_api_url
 
@@ -12,19 +13,26 @@ from .protocols import PROTOCOL_LABELS, validate_api_url
 class ApiProfile:
     id: str
     name: str
-    base_url: str
-    model: str
-    api_key: str = field(repr=False)
+    base_url: str = ""
+    model: str = ""
+    api_key: str = field(default="", repr=False)
     protocol: str = "chat_completions"
+    connection: str = "http"
+    executable: str = ""
 
     def __post_init__(self):
         if not self.id.strip() or not self.name.strip():
             raise ValueError("API 配置名称不能为空")
-        validate_api_url(self.base_url)
-        if self.protocol not in PROTOCOL_LABELS:
-            raise ValueError("不支持的总结 API 协议")
+        if self.connection == "http":
+            validate_api_url(self.base_url)
+            if self.protocol not in PROTOCOL_LABELS:
+                raise ValueError("不支持的总结 API 协议")
+        elif self.connection not in AGENT_LABELS:
+            raise ValueError("不支持的 AI 连接方式")
 
     def summary_settings(self, system_prompt=SUMMARY_SYSTEM_PROMPT):
+        if self.connection != "http":
+            return LocalAgentSettings(self.connection, self.executable, self.model, system_prompt)
         return SummarySettings(
             self.base_url,
             self.model,
@@ -56,9 +64,26 @@ class ApiProfileLibrary:
             raise ValueError("API 配置不存在")
         self.selected_id = profile_id
 
-    def add(self, name, base_url, model, api_key, protocol="chat_completions"):
+    def add(
+        self,
+        name,
+        base_url="",
+        model="",
+        api_key="",
+        protocol="chat_completions",
+        *,
+        connection="http",
+        executable="",
+    ):
         profile = ApiProfile(
-            uuid4().hex, name.strip(), base_url.strip(), model.strip(), api_key.strip(), protocol
+            uuid4().hex,
+            name.strip(),
+            base_url.strip(),
+            model.strip(),
+            api_key.strip(),
+            protocol,
+            connection,
+            executable.strip(),
         )
         self._profiles.append(profile)
         self.select(profile.id)

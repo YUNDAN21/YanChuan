@@ -12,7 +12,7 @@
 {"type":"event","seq":1,"session_id":"session-id","name":"state","payload":{"state":"preparing","mode":"meeting","active":true}}
 ```
 
-响应通过 ID 关联，设备枚举可异步完成。错误为 `{"type":"response","id":1,"error":{"code":"request_failed","message":"..."}}`。事件顺序号在进程内单调递增；会话 ID 每次开始更新。快照包含当前顺序号，客户端按顺序应用事件，修订字幕原位更新而不是重复追加。
+响应通过 ID 关联，设备枚举、API 模型查询和本地模型清单均可异步完成，响应可能乱序。清单检查不占用控制读取线程，停止指令可独立处理。错误为 `{"type":"response","id":1,"error":{"code":"request_failed","message":"..."}}`。事件顺序号在进程内单调递增；会话 ID 每次开始更新。快照包含当前顺序号，客户端按顺序应用事件，修订字幕原位更新而不是重复追加。
 
 配置只通过父子管道提供给本地编辑器，不进入日志或导出。stdout 不是诊断输出；stderr 不承载请求。退出先请求 `shutdown` 并等待响应和进程结束；父进程异常关闭时 stdin EOF 同样收尾。
 
@@ -31,10 +31,13 @@
 | `meetings.rename` | `title`，非空单行名称；返回更新后的元数据，同步磁盘导出并保留目录 |
 | `meetings.delete` | `directory`；永久删除指定会议目录，返回 id/title/directory/current；当前会议录音或总结中拒绝删除 |
 | `meetings.content` | `kind`: all / transcript / summaries，返回 `text`，包含全部已确认内容 |
-| `chat.list` | 当前会议的 `meeting_id` 与按 ID 排序的 `messages`；旧记录首次打开时恢复中断状态 |
+| `meetings.export` | 从 SQLite 重试写入 Markdown / JSON；返回 `success` 与 `error`，不调用 AI |
+| `chat.list` | 当前会议的 `meeting_id`、按 ID 排序的 `messages`、上下文状态及可空的 `preview` |
 | `chat.usage` | 可选 `question`（输入框草稿）；返回 meeting_id、estimated_tokens、reserved_tokens、total_tokens、context_tokens 和 over_budget，不调用 AI |
+| `chat.compress` | `meeting_id`；后台压缩早期聊天，返回会议与请求 ID；保留最近两轮原始问答 |
+| `chat.context.reset` | `meeting_id`；恢复完整聊天上下文，不删除消息，不改变会议原文 |
 | `chat.send` | `question`；立即返回 `meeting_id`、`request_id`、`estimated_tokens`，推理在独立线程执行 |
-| `chat.cancel` | 可选 `request_id`，停止当前会议的等待；已取消请求的迟到结果不再保存 |
+| `chat.cancel` | 可选 `request_id`，停止当前会议的等待并丢弃迟到结果，本地 Agent 请求同时结束对应的 CLI 进程 |
 | `chat.configure` | 部分更新：可选 `api_profile_id`、整数 `context_tokens`（最小 8192）、`model`、`reasoning_effort`；未传字段保持当前值 |
 | `summary.request` | 是否有未总结内容；成功后保存并推进检查点 |
 | `schedule.set` | 整数 `minutes` 1–120、`automatic` |
@@ -42,10 +45,14 @@
 | `profiles.save` | `profiles` 列表和 `selected_id`，先校验再原子保存 |
 | `profiles.select` | 配置 `id`；当前总结任务保持旧客户端快照 |
 | `profiles.models` | `base_url`、`api_key`、`protocol`；返回去重排序的模型 ID 列表，允许使用未保存草稿，不需要填写 model |
+| `profiles.agent_version` | `connection` 为 `codex` 或 `agy`，可选 `executable`；返回已安装 CLI 的版本，允许使用未保存草稿 |
+| `profiles.agent_catalog` | `connection`、可选 `executable` 及 `include_models`，返回实际路径、CLI 默认模型、可选模型 ID 和名称，以及查询警告 |
 | `templates.save` | `templates` 列表和 `selected_id`，草稿保存前不影响现有配置 |
 | `templates.defaults` | 四种预置正文 |
 | `appearance.set` | `mode`: light / dark |
+| `window.configure` | 布尔值 `close_to_tray`；保存关闭主窗口后的行为，不改变录音或任务状态 |
 | `captions.configure` | `enabled`、`display_mode`（original / bilingual / translated）、`target_language`（zh / ja / en）、可空 `api_profile_id` |
+| `captions.watch` | 布尔值 `enabled`，订阅或关闭悬浮字幕；返回当前订阅状态 |
 | `subtitle.split` | `text`、可用 `width`、前端实测 `glyph_widths`；返回保持原文的语义短行 |
 | `shutdown` | 停止采集、等待尾句和当前总结、关闭存储，返回 closed |
 
@@ -53,7 +60,13 @@
 
 会议处于 recording 时可调用 `DesktopService.set_source(source, session_id=...)`，JSONL 对应 `session.source`。请求只排队，设备操作在采集线程进行；一次只允许一个待切换请求。新设备打开成功后发送确认事件，失败时返回原音源与错误，录音继续。加载、停止、文件导入或独立字幕状态拒绝此会议指令；会话 ID 防止过期请求影响下一场会议。切换保持同一会议、模型、识别流及时间轴，使用本次开始时选定的设备 ID。
 
-配置中的 API 项包含 id、name、base_url、model、api_key、protocol；protocol 为 chat_completions / responses / anthropic。模板项包含 id、name、prompt。旧单配置、模板、外观文件和会议 SQLite 直接兼容。
+配置项包含 `id`、`name`、`model` 和 `connection`。`connection` 默认 `http`，适用于已有配置；HTTP 项使用 `base_url`、`api_key` 与 `protocol`（`chat_completions` / `responses` / `anthropic`）。本地 Agent 项使用 `connection` 值 `codex` 或 `agy`，可选 `executable` 完整路径，留空从本机查找 CLI。总结和问答分别选择配置 ID。模板项包含 `id`、`name`、`prompt`。
+
+`local_agent_catalog()` 使用 Codex 的 `config/read`、`model/list`，或 agy 的 `--print /model` 和 `models` 获取信息。返回的 `default_model` 供界面显示，配置中的空模型仍跟随 CLI。传 `include_models=false` 只查询实际路径和默认模型。
+
+`LocalAgentClient` 通过现有的 `SummaryClient` 和 `ChatClient` 契约接入。每次模型调用按行读取独立进程的 UTF-8 JSON 事件。Codex 使用 App Server 的临时会话和 `item/agentMessage/delta`，agy 使用 headless 流的 `agent_response` 文本增量。`MeetingAgent` 从生成中的 JSON 提取回答正文，完成后核对引用并保存。字幕翻译使用 HTTP 连接。 [Codex App Server](https://learn.chatgpt.com/docs/app-server) [agy Headless 模式](https://antigravity.google/docs/cli/headless/)
+
+`configuration.close_to_tray` 默认 false，持久化在不含密钥的 `data/meeting-appearance.json`，与主题相互保留。开启后关闭主窗口只隐藏到托盘，录音和已打开的字幕窗口继续运行。托盘点击/双击恢复主窗口，右键提供“打开言川”和“退出”；显式退出调用原有后端收尾流程，停止采集、保存尾句并释放模型后关闭窗口和托盘。托盘由 WinUI 层基于已有 WinUIEx 实现，Python 仅保存偏好，不控制 Windows 通知区域。
 
 ## 事件与生命周期
 
@@ -61,14 +74,39 @@
 - `session.source`：`source` 为实际音源，`requested_source` 为待切换音源（无请求时 null），`switching` 为切换状态，失败时附 `error`。按事件所属 session_id 应用，完成事件可能早于请求响应。快照中以 `audio_source` 提供同样的状态字段。
 - `progress`：核心启动阶段、状态及秒数；`file.progress`：已处理秒数与块数。
 - `meeting.loaded`：元数据、目录、完整转写和总结；`transcript`：新增确认记录。
-- `meeting.renamed`：更新后的会议元数据；`chat.updated`：`meeting_id` 与全部消息。聊天事件归属以 payload 的会议 ID 为准，外层 session_id 仍属于当前识别会话。
+- `meeting.renamed`：更新后的会议元数据；`chat.updated`：`meeting_id`、全部消息和 `context` 状态。聊天事件归属以 payload 的会议 ID 为准，外层 session_id 仍属于当前识别会话。
+- `chat.preview` 提供 `meeting_id`、`request_id`、`revision` 和当前已生成的 `text`，只用于展示正在回答的请求。切换会议时可从 `chat.list` 恢复该预览。任务完成、失败或取消后，以 `chat.updated` 的最终状态为准。
 - `meeting.deleted`：id/title/directory/current，删除成功后移除历史项；若删除的是当前会议，清空转写、总结、问答和会议名称，后端回到 idle。
 - `captions`：新增确认语义段 `confirmed` 和可空 `pending`。修订按段 ID 处理，仅 sentence 提交历史。文件同样使用核心语义事件投影，不通过前端再判边界。
+- `captions.reset`：新任务开始时清空上一任务字幕和译文；随后按新任务事件增量填充。
 - `summary.summary`、`summary.busy`、`summary.error`：独立总结状态；失败不推进检查点。
+- `summary.export`：磁盘导出警告，空字符串表示已成功导出。SQLite 成功提交总结和检查点后，导出失败仍推送 `summary.summary`；不作为总结失败重试。`meeting.loaded` 与快照中的会议字段包含 `export_error`。
 - `configuration`、`appearance`：成功保存后的配置或主题；`error`：安全错误消息；`finished`：本次转写和收尾完成。
 - `translation.units`：新增语义短行与移除的临时行键；`translation`：按 key/source_text/target_language 关联的译文、ready/error/skipped 状态；`translation.reset`：语言或服务改变后的旧结果失效；`translation.status`：独立配置或网络状态。快照包含 translation_units、translations 与 translation_state。
 
 重新连接启动一个空闲后端，不自动录音。原始转写实时提交 SQLite；历史打开时重建 Markdown 导出。关闭或取消时保留已确认记录，总结失败可手动重试。
+
+停止指令通过采集器的非阻塞 `request_stop()` 立即固定采集截止点，音频设备在所属线程收尾；已接收音频继续完成识别。关闭自动总结时，停止只等待已提交的手动总结，不为新尾句新增请求；自动模式则总结最终新增内容。
+
+会议与文件任务持续投影字幕短行；开启悬浮字幕订阅后才提交对应翻译，关闭订阅会作废尚未完成的结果。独立字幕任务按字幕偏好直接翻译。前端重连后重新订阅，双语模式在新译文等待期间显示新原文；仅译文模式不回退显示原文。
+
+## 聊天历史压缩与会议查阅
+
+点击问答输入框的上下文圆环，可查看固定上下文、聊天历史和原文规模，执行“保存并压缩”，查看聊天摘要或恢复完整历史。手动会议时间范围设置及接口已删除。
+
+`ChatCoordinator.compress(directory, meeting_id, client, context_tokens=...)` 仅压缩较早的已完成问答，最近两轮原样保留。使用提交时的问答模型与独立压缩提示词；会议原文不进入历史压缩请求。成功且估算占用减少后，原子保存摘要和消息检查点，原聊天消息仍完整留存。
+
+`chat_context` 表持久化 summary、through_message、model、updated_at、status、request_id、error、revision；旧试用数据中的范围字段不再读取。状态为 idle / compressing / completed / failed / cancelled / interrupted。失败、取消和迟到结果不替换已有摘要。`chat.context.reset` 恢复原聊天上下文。
+
+会议问答使用 `MeetingStore.reference_snapshot()` 获取提交时已确认的不可变原文快照，再由 `MeetingAgent` 查阅。`MeetingReference` 独立提供目录、Unicode 关键词搜索和分页读取，原文分片有稳定 ID、原记录 ID 和时间戳，不改变数据库、识别边界或导出。当前快照按会议标题及最后记录 ID 缓存，新问题才纳入新转写。
+
+模型先选择局部查证或整场遍历。局部查证通过 directory / search / read / scan / answer 指令逐步获取资料；整场问题由宿主按顺序遍历每批原文，提取与问题有关的事实，完整覆盖后整理答案。旧工具结果退出下一轮输入，保留有界工作笔记及原文 ID，需要时重新读取。回答引用只接受已读取的原文编号，逐批回查后附时间戳。达到预算或请求上限时明确失败，不静默漏过材料。
+
+该循环使用跨协议 JSON 文字动作契约，复用 Chat Completions / Responses / Anthropic 的现有消息传输，不要求服务支持某家的原生工具调用格式；模型须按提示输出结构化 JSON。解析失败有明确错误，不把工具指令当回答显示。只允许会议只读工具，无文件路径、Shell 或外部网络工具。
+
+`chat.updated` 除消息和 context 外，还包含 activity、activity_request_id，显示搜索、读取、遍历进度及回查状态。前端只为当前会议的待处理请求更新状态。`chat.cancel` 同时停止当前查阅的后续模型请求，丢弃正在等待的迟到结果；切换会议后结果仍归属原会议。
+
+`chat.usage` 返回 meeting_tokens（索引）、history_tokens、question_tokens、source_tokens（完整本地原文规模）、tool_tokens（查阅预留）、retrieval_mode、can_compress、compressed 等。完整原文不计入固定上下文，每次实际模型请求另做输入预算检查。容量仍按 token 估算，默认预留回答 4096、查阅 2048；超限提示压缩聊天历史或提高模型容量。
 
 ## 分组笔记
 
@@ -98,7 +136,7 @@
 
 ## 会议问答
 
-`ChatClient`、`ChatHistory`、`ChatCoordinator` 位于会议库，不依赖桌面服务、识别或 UI。调用方提供 `MeetingStore.context_snapshot()` 和具体客户端；快照包含完整转写、所有总结和原文检查点。只加入成功完成的历史问答，失败/取消的轮次保留供查看和重试，不作为后续模型上下文。上下文没有自动裁剪或检索；预算采用字符类别的 token 估算，预留 4096 输出，超预算时明确提示修改容量，服务 tokenizer 才是实际依据。
+`ChatClient`、`ChatHistory`、`ChatCoordinator` 位于会议库，不依赖桌面服务、识别或 UI。会议问答通过注入的 MeetingAgent 执行查阅，普通 ChatClient 调用仍可独立使用。只有成功完成的历史问答纳入后续上下文；启用压缩后使用早期摘要及未压缩轮次。
 
 聊天独立选择已有 API；首次发送时将当前选择固定为聊天配置，之后切换总结配置不改变聊天服务。现有三协议均支持 user/assistant 多轮消息，Responses 使用本地完整历史和 store=false。当前请求固定客户端与会议快照；切换配置仅影响下一任务，继续录音产生的新条目在下次提问纳入。每个会议同时一个问题，不同会议可以分别处理；取消立即更新状态，HTTP 请求可能持续至响应或超时，但迟到结果被丢弃。
 
@@ -123,7 +161,7 @@ SQLite `chat_message` 表按需创建，不改已有转写和总结。消息包�
 
 `models.list` 返回 `settings`、`assets`、`sources=["huggingface"]`、`runtime="crispasr-0.8.45-lc1"` 和下载状态。
 `models.configure` 接受 `selected_model`（qwen-0.6b / qwen-1.7b）、`source`、可选绝对 `directory` 和 `model_file`（兼容 Q8 GGUF）；活动会话期间拒绝切换。
-`models.download` 在独立进程下载选定模型和分段模型；`models.cancel` 停止下载，GGUF 分段文件保留供重试续传，完整大小/SHA256 通过后才原子替换。
+`models.download` 在独立进程下载选定模型和分段模型；`models.cancel` 停止下载，GGUF 分段文件保留供重试续传，大小与格式检查通过后才原子替换。GGUF 检查架构、张量边界、型号和精度，ONNX 检查固定大小与 CPU 运行时输入接口；不计算文件哈希。ONNX 就绪检查按路径、大小和修改时间缓存。
 旧 selected_model/directory 保留；旧 ModelScope 选择映射到当前唯一有效 Hugging Face 源，旧 safetensors 缓存保持原位。
 模型管理不会修改会议、API 密钥、模板、翻译或外观文件。模型切换和服务 close 显式释放原生权重。
 
@@ -143,4 +181,11 @@ SQLite `chat_message` 表按需创建，不改已有转写和总结。消息包�
 
 桌面服务 `api_models(...)` 消费当前编辑草稿，不保存配置或修改正在运行的总结、翻译和问答客户端。JSONL 在独立查询线程处理 `profiles.models`，查询期间仍能响应停止录音等控制命令。HTTP 错误仅返回状态码与提示，不回传服务响应正文或密钥，也不跟随重定向。
 
+模型列表、总结、问答和翻译共用应用 `User-Agent` 与 `Accept: application/json`。各协议认证头保持不变：兼容 OpenAI 的协议使用 Bearer，Anthropic 使用自己的密钥及版本头。HTTP 401 显示认证失败；403 的 HTML/挑战响应显示网关防护提示，其他 403 显示权限及访问规则提示。诊断不读取或展示错误响应正文。
+
 WinUI 的“API 配置”中点击“获取模型列表”，随后在模型框选择或输入关键词筛选；仍可手动填写模型 ID。修改地址、密钥、协议或切换配置会清空旧列表，并忽略旧请求的迟到结果。获取失败/列表为空时显示原因，已填写的模型保留；仅“保存并使用”持久化草稿。
+会议问答的用量接口会按实际策略返回 `retrieval_mode`：`false` 表示完整会议原文与聊天历史能在配置容量及回答预留内一次提交；`true` 表示需要按需查阅。没有独立的会议时长或 32k 原文门槛。`chat.send` 返回的 `estimated_tokens` 与同一问题的 `chat.usage` 一致；`tool_tokens` 在完整提交时为 0。
+
+问答/历史压缩默认 180 秒任务时限，期间 `chat.updated` 带当前阶段与已等待秒数；超时保存失败状态，可以重新发送，原记录和总结检查点保留。API 日志位于应用数据目录的 `data/desktop-backend/stderr.log`，新增请求阶段、耗时、正文块计数及 token 数字，不包含请求或响应正文。
+
+本地 Agent 的诊断日志使用同一请求 ID 串起问答阶段、CLI 类型、首次正文耗时、总耗时、增量数、退出码及失败类别。言川只记录诊断字段，CLI stderr 用于本地归类错误。

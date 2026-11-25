@@ -62,6 +62,8 @@ def test_translation_uses_existing_wire_protocol_without_meeting_prompt(protocol
         )
         assert translator.translate("こんにちは。", "Japanese", "en") == "Hello."
         path, headers, body = requests[0]
+        assert headers["User-Agent"] == "YanChuan/0.2.0"
+        assert headers["Accept"] == "application/json"
         assert path.endswith(
             {
                 "chat_completions": "/chat/completions",

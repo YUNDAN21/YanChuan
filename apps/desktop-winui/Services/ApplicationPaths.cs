@@ -3,6 +3,10 @@ namespace LiveCaptions.Desktop.Services;
 public static class ApplicationPaths
 {
     public const string RuntimeMarker = "yanchuan.runtime.json";
+    public static string BackendLogPath(string dataRoot) =>
+        Path.Combine(dataRoot, "data", "desktop-backend", "stderr.log");
+    public static string ThemeCachePath(string dataRoot) =>
+        Path.Combine(dataRoot, "data", "desktop-winui", "theme.txt");
     public static string? FindMarker(string root)
     {
         foreach (var name in new[] { RuntimeMarker, "livecaptions.runtime.json" })

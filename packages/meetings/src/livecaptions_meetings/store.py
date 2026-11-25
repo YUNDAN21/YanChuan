@@ -48,6 +48,9 @@ class MeetingStore:
     def __init__(self, directory: Path):
         self.directory = Path(directory)
         self._lock = threading.RLock()
+        self.export_error = ""
+        self._reference = None
+        self._reference_key = None
         self._db = sqlite3.connect(self.directory / "meeting.sqlite3", check_same_thread=False)
         self._db.row_factory = sqlite3.Row
         self._db.execute("PRAGMA journal_mode=WAL")
@@ -161,7 +164,7 @@ class MeetingStore:
             )
             self._db.execute("UPDATE meeting SET summary_cursor=?", (entries[-1].id,))
             summary_id = result.lastrowid
-        self.export()
+        self.retry_export()
         return next(summary for summary in self.summaries() if summary.id == summary_id)
 
     def record_summary_error(self, message: str):
@@ -183,7 +186,7 @@ class MeetingStore:
                 "UPDATE meeting SET status=?, ended_at=COALESCE(?,ended_at)",
                 (status, utc_now() if ended else None),
             )
-        self.export()
+        self.retry_export()
 
     def rename(self, title: str):
         title = title.strip()
@@ -192,7 +195,7 @@ class MeetingStore:
         with self._lock:
             with self._db:
                 self._db.execute("UPDATE meeting SET title=?", (title,))
-            self.export()
+            self.retry_export()
             return self.metadata
 
     def content(self, kind="all"):
@@ -222,6 +225,18 @@ class MeetingStore:
                 "content": self.content(),
             }
 
+    def reference_snapshot(self):
+        """Freeze confirmed transcript records for a read-only meeting agent."""
+        from .meeting_reference import MeetingReference
+
+        with self._lock:
+            meta = self.metadata
+            key = (meta["id"], meta["title"], self.last_entry)
+            if key != self._reference_key:
+                self._reference = MeetingReference(meta["id"], meta["title"], self.entries())
+                self._reference_key = key
+            return self._reference
+
     def export(self):
         with self._lock:
             meta = self.metadata
@@ -235,7 +250,21 @@ class MeetingStore:
                 temporary = self.directory / (name + ".tmp")
                 temporary.write_text(text, encoding="utf-8")
                 temporary.replace(self.directory / name)
+            self.export_error = ""
             return self.directory
+
+    def retry_export(self):
+        """Retry readable files independently of SQLite commits and AI checkpoints."""
+        with self._lock:
+            try:
+                self.export()
+            except OSError:
+                self.export_error = (
+                    "会议内容已保存，导出文件写入失败；请检查目录权限或磁盘空间后重试导出。"
+                )
+                return False
+            self.export_error = ""
+            return True
 
     def close(self):
         with self._lock:

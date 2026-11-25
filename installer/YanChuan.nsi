@@ -1,5 +1,6 @@
 Unicode true
 RequestExecutionLevel user
+CRCCheck off
 SetCompressor /SOLID lzma
 SetCompressorDictSize 32
 SetDatablockOptimize on

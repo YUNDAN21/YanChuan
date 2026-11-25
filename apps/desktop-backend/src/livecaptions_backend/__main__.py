@@ -68,6 +68,7 @@ def serve(input_stream, output_stream, root, *, service_factory=None):
         with (
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="devices") as devices,
             ThreadPoolExecutor(max_workers=1, thread_name_prefix="api-models") as model_requests,
+            ThreadPoolExecutor(max_workers=1, thread_name_prefix="model-inventory") as inventory,
         ):
             for line in input_stream:
                 if broken.is_set():
@@ -89,8 +90,14 @@ def serve(input_stream, output_stream, root, *, service_factory=None):
                     continue
                 if request["method"] == "devices.list":
                     devices.submit(respond, request)
-                elif request["method"] == "profiles.models":
+                elif request["method"] in {
+                    "profiles.models",
+                    "profiles.agent_version",
+                    "profiles.agent_catalog",
+                }:
                     model_requests.submit(respond, request)
+                elif request["method"] == "models.list":
+                    inventory.submit(respond, request)
                 else:
                     respond(request)
                 if request["method"] == "shutdown":

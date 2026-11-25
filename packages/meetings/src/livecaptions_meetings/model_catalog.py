@@ -5,9 +5,9 @@ from dataclasses import dataclass, field
 from time import monotonic
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
-from urllib.request import Request, build_opener
+from urllib.request import Request
 
-from .client import _NoRedirect
+from .http_transport import http_error_message, provider_opener, request_headers
 from .protocols import endpoint_url, wire_protocol
 
 
@@ -32,8 +32,8 @@ def list_api_models(settings: ModelCatalogSettings) -> list[str]:
     """Return unique model IDs; support OpenAI-compatible and Anthropic pagination."""
     url = endpoint_url(settings.base_url, "/models")
     wire = wire_protocol(settings.protocol)
-    opener = build_opener(_NoRedirect())
-    headers = {"Accept": "application/json", **wire.headers(settings)}
+    opener = provider_opener()
+    headers = request_headers(wire.headers(settings))
     models, cursors = set(), set()
     deadline = monotonic() + 30
     cursor = None
@@ -52,13 +52,9 @@ def list_api_models(settings: ModelCatalogSettings) -> list[str]:
                     raise ModelCatalogError("模型列表响应过大，请手动填写模型。")
                 payload = json.loads(raw)
         except HTTPError as exc:
-            if exc.code in {401, 403}:
-                message = "获取模型列表失败，请检查 API 密钥或访问权限"
-            elif exc.code in {404, 405}:
-                message = "该 API 未提供模型列表接口，可手动填写模型"
-            else:
-                message = "获取模型列表失败"
-            raise ModelCatalogError(f"{message}（HTTP {exc.code}）。") from None
+            error = ModelCatalogError(http_error_message(exc, "获取模型列表"))
+            exc.close()
+            raise error from None
         except (URLError, TimeoutError, OSError):
             raise ModelCatalogError("获取模型列表连接失败或超时，请检查地址后重试。") from None
         except (ValueError, UnicodeError):

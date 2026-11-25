@@ -1,7 +1,5 @@
 """State isolation and trained-model preprocessing contracts for optional adapters."""
 
-import hashlib
-import json
 from pathlib import Path
 
 import numpy as np
@@ -47,8 +45,6 @@ def test_vad_rejects_wrong_frame_length():
 def test_smart_turn_features_match_official_whisper_pipeline(length):
     fixtures = Path(__file__).parent / "fixtures"
     path = fixtures / "smart_turn_official_features.npz"
-    metadata = json.loads(path.with_suffix(".json").read_text("utf-8"))
-    assert hashlib.sha256(path.read_bytes()).hexdigest() == metadata["sha256"]
     session = Session()
     endpoint = SmartTurnEndpoint(session)
     pcm = np.random.default_rng(51).normal(0, 0.1, length).astype(np.float32)

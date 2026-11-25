@@ -3,121 +3,415 @@
  xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
  xmlns:views="using:LiveCaptions.Desktop.Views"
  Title="言川 · 会议转写">
- <Grid x:Name="Root" Background="{ThemeResource ApplicationPageBackgroundThemeBrush}">
-  <Grid.Resources><views:BooleanVisibilityConverter x:Key="BoolVisibility"/><SolidColorBrush x:Key="ContextRingBrush" Color="#999999"/></Grid.Resources>
-  <Grid.ColumnDefinitions><ColumnDefinition Width="224"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-  <Border Background="{ThemeResource LayerFillColorDefaultBrush}" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}" BorderThickness="0,0,1,0">
-   <Grid Padding="20,28,20,20" RowSpacing="16">
-    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-    <StackPanel Orientation="Horizontal" Spacing="10" Margin="0,0,0,8"><Image Source="ms-appx:///Assets/AppIcon.png" Width="32" Height="32"/><TextBlock Text="言川" FontSize="21" FontWeight="SemiBold" VerticalAlignment="Center"/></StackPanel>
-    <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="8">
-     <Button Click="OpenCaptions" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="实时字幕" AutomationProperties.Name="实时字幕"><SymbolIcon Symbol="ClosedCaption"/></Button>
-     <Button Click="EditTemplates" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="提示词模板" AutomationProperties.Name="提示词模板"><FontIcon Glyph="&#xE8A5;" FontSize="19"/></Button>
-     <Button Click="EditProfiles" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="API 配置" AutomationProperties.Name="API 配置"><FontIcon Glyph="&#xE774;" FontSize="19"/></Button>
-     <Button Click="ManageModels" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="识别模型" AutomationProperties.Name="识别模型"><FontIcon Glyph="&#xE7B8;" FontSize="19"/></Button>
-    </StackPanel>
-    <TextBlock Grid.Row="2" Text="历史会议" Margin="4,8,0,0" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-    <ListView x:Name="HistoryList" Grid.Row="3" ItemsSource="{Binding Meetings}" SelectionMode="Single" IsItemClickEnabled="True" ItemClick="OpenHistory" HorizontalContentAlignment="Stretch">
-     <ListView.ItemTemplate><DataTemplate><Grid ColumnSpacing="4" Padding="0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Spacing="5" VerticalAlignment="Center"><TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"/><TextBlock Text="{Binding DisplayTime}" FontSize="11" Opacity="0.6"/></StackPanel><Button Grid.Column="1" Click="DeleteMeeting" Tag="{Binding}" Width="28" Height="32" Padding="6" Background="Transparent" BorderThickness="0" CornerRadius="8" ToolTipService.ToolTip="删除会议" AutomationProperties.Name="删除会议"><FontIcon Glyph="&#xE74D;" FontSize="14"/></Button></Grid></DataTemplate></ListView.ItemTemplate>
+ <Grid x:Name="Root">
+  <Grid.Resources>
+   <views:BooleanVisibilityConverter x:Key="BoolVisibility"/>
+   <SolidColorBrush x:Key="ContextRingBrush" Color="#999999"/>
+   <CollectionViewSource x:Key="MeetingGroups" IsSourceGrouped="True"/>
+  </Grid.Resources>
+  <Grid.RowDefinitions><RowDefinition Height="48"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+  <Grid.ColumnDefinitions><ColumnDefinition Width="260"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <Border x:Name="BackdropFallback" Grid.RowSpan="2" Grid.ColumnSpan="2" Visibility="Collapsed" Background="{ThemeResource SolidBackgroundFillColorBaseBrush}"/>
+
+  <!-- Title bar: content extends into it; caption buttons are drawn by the system on the right. -->
+  <Grid x:Name="AppTitleBar" Grid.ColumnSpan="2" Background="Transparent">
+   <StackPanel Orientation="Horizontal" Spacing="10" Margin="20,0,0,0" VerticalAlignment="Center">
+    <ContentControl Style="{StaticResource BrandMarkStyle}" AutomationProperties.AccessibilityView="Raw"/>
+    <TextBlock Text="言川" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"/>
+    <TextBlock x:Name="AppTitleDetail" Text="会议转写" FontSize="13" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+   </StackPanel>
+  </Grid>
+
+  <!-- Sidebar -->
+  <Grid x:Name="Sidebar" Grid.Row="1" Padding="12,0,12,12">
+   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="3*"/><RowDefinition Height="Auto"/><RowDefinition Height="2*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+   <Button Click="OpenCaptions" Style="{StaticResource NavigationRowButtonStyle}" AutomationProperties.Name="实时字幕" ToolTipService.ToolTip="打开置顶的实时字幕窗">
+    <StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE190;" FontSize="16"/><TextBlock Text="实时字幕"/></StackPanel>
+   </Button>
+   <Button x:Name="ImportButton" Grid.Row="1" Click="ImportFile" Style="{StaticResource NavigationRowButtonStyle}" AutomationProperties.Name="导入录音" ToolTipService.ToolTip="转写 WAV 或 FLAC 录音文件">
+    <StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8B5;" FontSize="16"/><TextBlock Text="导入录音"/></StackPanel>
+   </Button>
+   <Border Grid.Row="2" Height="1" Margin="4,8" Background="{ThemeResource DividerStrokeColorDefaultBrush}"/>
+   <AutoSuggestBox x:Name="MeetingSearch" Grid.Row="3" PlaceholderText="搜索会议" QueryIcon="Find" TextChanged="MeetingSearchChanged" AutomationProperties.Name="搜索会议"/>
+   <Grid Grid.Row="4" Margin="0,6,0,0">
+    <ListView x:Name="HistoryList" ItemsSource="{Binding Source={StaticResource MeetingGroups}}" SelectionMode="Single" IsItemClickEnabled="True" ItemClick="OpenHistory" HorizontalContentAlignment="Stretch" Padding="0" AutomationProperties.Name="历史会议">
+     <ListView.Resources>
+      <SolidColorBrush x:Key="ListViewHeaderItemDividerStroke" Color="Transparent"/>
+     </ListView.Resources>
+     <ListView.GroupStyle>
+      <GroupStyle HidesIfEmpty="True">
+       <GroupStyle.HeaderContainerStyle>
+        <Style TargetType="ListViewHeaderItem"><Setter Property="MinHeight" Value="0"/><Setter Property="Padding" Value="12,12,0,4"/><Setter Property="Margin" Value="0"/></Style>
+       </GroupStyle.HeaderContainerStyle>
+       <GroupStyle.HeaderTemplate><DataTemplate><TextBlock Text="{Binding Key}" FontSize="12" FontWeight="Normal" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></DataTemplate></GroupStyle.HeaderTemplate>
+      </GroupStyle>
+     </ListView.GroupStyle>
+     <ListView.ItemContainerStyle>
+      <Style TargetType="ListViewItem" BasedOn="{StaticResource DefaultListViewItemStyle}"><Setter Property="Padding" Value="12,0,4,0"/><Setter Property="MinHeight" Value="52"/></Style>
+     </ListView.ItemContainerStyle>
+     <ListView.ItemTemplate><DataTemplate>
+      <Grid Padding="0,8" ColumnSpacing="4" Background="Transparent" Opacity="{Binding Opacity}" PointerEntered="MeetingRowEntered" PointerExited="MeetingRowExited" RightTapped="MeetingRowRightTapped" ToolTipService.ToolTip="{Binding Title}">
+       <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+       <StackPanel Spacing="2" VerticalAlignment="Center">
+        <TextBlock Text="{Binding Title}" TextTrimming="CharacterEllipsis"/>
+        <StackPanel Orientation="Horizontal" Spacing="6">
+         <Ellipse Width="7" Height="7" VerticalAlignment="Center" Fill="{ThemeResource RecordingForegroundBrush}" Visibility="{Binding Recording, Converter={StaticResource BoolVisibility}}"/>
+         <TextBlock Text="{Binding Detail}" FontSize="12" Foreground="{ThemeResource RecordingForegroundBrush}" Visibility="{Binding Recording, Converter={StaticResource BoolVisibility}}"/>
+         <TextBlock Text="{Binding Detail}" FontSize="12" Foreground="{ThemeResource TextFillColorSecondaryBrush}" Visibility="{Binding NotRecording, Converter={StaticResource BoolVisibility}}"/>
+        </StackPanel>
+       </StackPanel>
+       <Button Grid.Column="1" Tag="{Binding}" Click="ShowMeetingMenu" GotFocus="MeetingMenuFocused" LostFocus="MeetingMenuUnfocused" Opacity="0" Width="28" Height="28" Style="{StaticResource CompactIconButtonStyle}" ToolTipService.ToolTip="更多操作" AutomationProperties.Name="更多操作"><FontIcon Glyph="&#xE712;" FontSize="14"/></Button>
+      </Grid>
+     </DataTemplate></ListView.ItemTemplate>
     </ListView>
-    <Grid Grid.Row="4" ColumnSpacing="4">
-     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-     <TextBlock Text="笔记" Margin="4,0,0,0" FontSize="12" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
-     <Button x:Name="NewNoteButton" Grid.Column="1" Click="NewSidebarNote" Width="28" Height="28" Padding="5" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="新建笔记" AutomationProperties.Name="新建笔记"><FontIcon Glyph="&#xE710;" FontSize="14"/></Button>
-     <Button x:Name="ManageNotesButton" Grid.Column="2" Click="OpenNotes" Width="28" Height="28" Padding="5" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="管理笔记分组" AutomationProperties.Name="管理笔记分组"><FontIcon Glyph="&#xE713;" FontSize="14"/></Button>
+    <TextBlock x:Name="HistoryEmpty" Text="还没有会议记录" Margin="12,12,4,0" FontSize="12" TextWrapping="Wrap" IsHitTestVisible="False" Visibility="Collapsed" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+   </Grid>
+   <Grid Grid.Row="5" ColumnSpacing="2" Margin="12,12,0,4">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <TextBlock Text="笔记" FontSize="12" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+    <Button x:Name="NewNoteButton" Grid.Column="1" Click="NewSidebarNote" Width="28" Height="28" Style="{StaticResource CompactIconButtonStyle}" ToolTipService.ToolTip="新建笔记" AutomationProperties.Name="新建笔记"><FontIcon Glyph="&#xE710;" FontSize="14"/></Button>
+    <Button x:Name="ManageNotesButton" Grid.Column="2" Click="OpenNotes" Width="28" Height="28" Style="{StaticResource CompactIconButtonStyle}" ToolTipService.ToolTip="整理笔记分组" AutomationProperties.Name="整理笔记分组"><FontIcon Glyph="&#xE70F;" FontSize="14"/></Button>
+   </Grid>
+   <Grid Grid.Row="6">
+    <TreeView x:Name="NotesTree" SelectionMode="Single" ItemInvoked="OpenSidebarNote" AutomationProperties.Name="笔记分组列表">
+     <TreeView.ItemTemplate><DataTemplate><TextBlock Text="{Binding Content.Title}" FontSize="13" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding Content.Title}" VerticalAlignment="Center"/></DataTemplate></TreeView.ItemTemplate>
+    </TreeView>
+    <TextBlock x:Name="NotesEmpty" Text="暂无笔记，点击 + 新建" Margin="12,8,4,0" FontSize="12" TextWrapping="Wrap" IsHitTestVisible="False" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+   </Grid>
+   <Grid Grid.Row="7" ColumnSpacing="4" Margin="0,8,0,0">
+    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <Border x:Name="SettingsSelected" CornerRadius="6" Visibility="Collapsed" Background="{ThemeResource SubtleFillColorSecondaryBrush}">
+     <Border Width="3" Height="16" CornerRadius="1.5" HorizontalAlignment="Left" Background="{ThemeResource AccentFillColorDefaultBrush}"/>
+    </Border>
+    <Button x:Name="SettingsButton" Click="ToggleSettings" Style="{StaticResource NavigationRowButtonStyle}" AutomationProperties.Name="设置" ToolTipService.ToolTip="音频设备、识别模型、AI 连接与外观">
+     <StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE713;" FontSize="16"/><TextBlock Text="设置"/></StackPanel>
+    </Button>
+    <Button x:Name="ReconnectButton" Grid.Column="1" Click="Reconnect" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="重新连接后端" AutomationProperties.Name="重新连接后端" Visibility="Collapsed"><FontIcon Glyph="&#xE72C;" FontSize="16"/></Button>
+    <Button x:Name="ThemeButton" Grid.Column="2" Click="ToggleTheme" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="切换深色模式" AutomationProperties.Name="切换深色模式"><FontIcon x:Name="ThemeIcon" Glyph="&#xE708;" FontSize="16"/></Button>
+   </Grid>
+  </Grid>
+
+  <!-- Content layer -->
+  <Border Grid.Row="1" Grid.Column="1" Background="{ThemeResource LayerFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1,1,0,0" CornerRadius="8,0,0,0">
+   <Grid x:Name="ContentArea" Padding="32,28,32,24">
+    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+
+    <!-- Header -->
+    <Grid ColumnSpacing="8">
+     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+     <Button x:Name="BackButton" Click="GoBack" Width="36" Height="36" Padding="0" Margin="0,0,6,0" VerticalAlignment="Center" Visibility="Collapsed" ToolTipService.ToolTip="返回会议记录" AutomationProperties.Name="返回会议记录"><FontIcon Glyph="&#xE72B;" FontSize="16"/></Button>
+     <StackPanel x:Name="TitleArea" Grid.Column="1" Spacing="4" VerticalAlignment="Center" SizeChanged="TitleAreaResized">
+      <StackPanel Orientation="Horizontal" Spacing="4">
+       <TextBlock x:Name="TitleText" Text="新会议" FontSize="26" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" VerticalAlignment="Center"/>
+       <TextBox x:Name="TitleEdit" PlaceholderText="会议名称" Visibility="Collapsed" FontSize="20" MinWidth="320" VerticalAlignment="Center" KeyDown="TitleEditKeyDown" LostFocus="TitleEditLostFocus" AutomationProperties.Name="会议名称"/>
+       <Button x:Name="RenameButton" Click="BeginRename" Style="{StaticResource CompactIconButtonStyle}" VerticalAlignment="Center" ToolTipService.ToolTip="重命名会议" AutomationProperties.Name="重命名会议"><FontIcon Glyph="&#xE70F;" FontSize="15"/></Button>
+      </StackPanel>
+      <StackPanel Orientation="Horizontal" Spacing="10">
+       <Border x:Name="RecordingPill" Visibility="Collapsed" CornerRadius="10" Padding="8,2,10,2" VerticalAlignment="Center" Background="{ThemeResource RecordingBackgroundBrush}">
+        <StackPanel Orientation="Horizontal" Spacing="6">
+         <Ellipse Width="7" Height="7" VerticalAlignment="Center" Fill="{ThemeResource RecordingForegroundBrush}"/>
+         <TextBlock x:Name="RecordingClock" FontSize="12" FontWeight="SemiBold" Foreground="{ThemeResource RecordingForegroundBrush}"/>
+        </StackPanel>
+       </Border>
+       <TextBlock x:Name="MetaText" FontSize="13" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+      </StackPanel>
+     </StackPanel>
+     <Button x:Name="ChatToggle" Grid.Column="2" Click="ToggleChat" Height="36" VerticalAlignment="Center" AutomationProperties.Name="会议问答" ToolTipService.ToolTip="就这场会议提问，回答时按需查阅完整原文">
+      <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE8F2;" FontSize="16"/><TextBlock Text="会议问答"/></StackPanel>
+     </Button>
+     <DropDownButton x:Name="ScheduleButton" Grid.Column="3" Height="36" VerticalAlignment="Center" AutomationProperties.Name="自动总结设置">
+      <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE823;" FontSize="16"/><TextBlock x:Name="ScheduleLabel" Text="自动总结"/></StackPanel>
+      <DropDownButton.Flyout><Flyout Placement="BottomEdgeAlignedRight"><StackPanel Spacing="16" Width="260">
+       <TextBlock Text="自动总结" FontSize="16" FontWeight="SemiBold"/>
+       <CheckBox x:Name="Automatic" Content="启用" Checked="ScheduleChanged" Unchecked="ScheduleChanged"/>
+       <NumberBox x:Name="Interval" Header="间隔（分钟）" Minimum="1" Maximum="120" Value="5" SpinButtonPlacementMode="Compact" ValueChanged="IntervalChanged"/>
+       <TextBlock Text="只总结新增内容；总结失败不影响转写。" Style="{StaticResource SettingDescriptionStyle}"/>
+      </StackPanel></Flyout></DropDownButton.Flyout>
+     </DropDownButton>
+     <Button x:Name="StartButton" Grid.Column="4" Style="{StaticResource AccentButtonStyle}" Click="ToggleMeeting" Height="36" Padding="12,0,16,0" VerticalAlignment="Center" AutomationProperties.Name="开始录制">
+      <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon x:Name="StartIcon" Glyph="&#xE7C8;" FontSize="16"/><TextBlock x:Name="StartLabel" Text="开始录制"/></StackPanel>
+     </Button>
     </Grid>
-    <Grid Grid.Row="5">
-     <TreeView x:Name="NotesTree" SelectionMode="Single" ItemInvoked="OpenSidebarNote" AutomationProperties.Name="笔记分组列表">
-      <TreeView.ItemTemplate><DataTemplate><TextBlock Text="{Binding Content.Title}" TextTrimming="CharacterEllipsis" ToolTipService.ToolTip="{Binding Content.Title}" VerticalAlignment="Center"/></DataTemplate></TreeView.ItemTemplate>
-     </TreeView>
-     <TextBlock x:Name="NotesEmpty" Text="暂无笔记，点击 + 新建" Margin="4,8,4,0" FontSize="12" Opacity="0.6" TextWrapping="Wrap" IsHitTestVisible="False"/>
+
+    <!-- Meeting toolbar -->
+    <Grid x:Name="MeetingControls" Grid.Row="1" Margin="0,16,0,0" ColumnSpacing="16">
+     <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+     <StackPanel Orientation="Horizontal" Spacing="8">
+      <TextBlock Text="音源" FontSize="13" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+      <ComboBox x:Name="SourcePicker" SelectedIndex="0" MinWidth="160" SelectionChanged="SourceChanged" AutomationProperties.Name="音源"><ComboBoxItem Content="系统 + 麦克风" Tag="both"/><ComboBoxItem Content="系统声音" Tag="system"/><ComboBoxItem Content="麦克风" Tag="microphone"/></ComboBox>
+     </StackPanel>
+     <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8">
+      <TextBlock Text="语言" FontSize="13" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+      <ComboBox x:Name="LanguagePicker" SelectedIndex="0" MinWidth="128" AutomationProperties.Name="语言"><ComboBoxItem Content="自动语言" Tag="auto"/><ComboBoxItem Content="中文" Tag="zh"/><ComboBoxItem Content="日本語" Tag="ja"/><ComboBoxItem Content="English" Tag="en"/></ComboBox>
+     </StackPanel>
+     <TextBlock x:Name="SourceHint" Grid.Column="2" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+     <Button x:Name="CopyAllButton" Grid.Column="3" Tag="all" Click="CopyContent" Width="36" Height="36" Style="{StaticResource CompactIconButtonStyle}" ToolTipService.ToolTip="复制会议全部内容" AutomationProperties.Name="复制会议全部内容"><FontIcon Glyph="&#xE8C8;" FontSize="16"/></Button>
+     <Button x:Name="FolderButton" Grid.Column="4" Click="OpenFolder" Width="36" Height="36" Style="{StaticResource CompactIconButtonStyle}" ToolTipService.ToolTip="打开记录目录" AutomationProperties.Name="打开记录目录"><FontIcon Glyph="&#xED25;" FontSize="16"/></Button>
     </Grid>
-    <StackPanel Grid.Row="6" Orientation="Horizontal" Spacing="8">
-     <Button x:Name="ThemeButton" Click="ToggleTheme" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="切换深色模式" AutomationProperties.Name="切换深色模式"><FontIcon x:Name="ThemeIcon" Glyph="&#xE708;" FontSize="19"/></Button>
-     <Button Click="EditDevices" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="音频设备" AutomationProperties.Name="音频设备"><FontIcon Glyph="&#xE720;" FontSize="19"/></Button>
-     <Button x:Name="ReconnectButton" Click="Reconnect" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="重新连接后端" AutomationProperties.Name="重新连接后端" Visibility="Collapsed"><FontIcon Glyph="&#xE72C;" FontSize="19"/></Button>
+
+    <!-- Notices: collapsed bars take no space, so closed bars do not add a gap. -->
+    <StackPanel Grid.Row="2">
+     <InfoBar x:Name="ErrorBar" IsOpen="False" Severity="Error" IsClosable="True" Margin="0,12,0,0" Visibility="Collapsed" Closed="NoticeClosed"/>
+     <InfoBar x:Name="ExportBar" IsOpen="False" Severity="Warning" IsClosable="False" Margin="0,12,0,0" Visibility="Collapsed">
+      <InfoBar.ActionButton><Button x:Name="RetryExportButton" Click="RetryExport" Content="重试导出" AutomationProperties.Name="重试导出文件"/></InfoBar.ActionButton>
+     </InfoBar>
     </StackPanel>
+
+    <Grid Grid.Row="3" x:Name="Workspace" Margin="0,16,0,0" ColumnSpacing="16" SizeChanged="WorkspaceResized"><Grid.ColumnDefinitions><ColumnDefinition x:Name="TranscriptColumn" Width="*"/><ColumnDefinition x:Name="SummaryColumn" Width="*"/><ColumnDefinition x:Name="ChatColumn" Width="0"/></Grid.ColumnDefinitions>
+     <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+     <RadioButtons x:Name="ContentTabs" Grid.ColumnSpan="2" Visibility="Collapsed" MaxColumns="2" SelectedIndex="0" SelectionChanged="ContentTabChanged" Margin="0,0,0,12"><x:String>会议转写</x:String><x:String>AI 总结</x:String></RadioButtons>
+
+     <!-- Transcript card -->
+     <Border x:Name="TranscriptPanel" Grid.Row="1" Style="{StaticResource CardBorderStyle}">
+      <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+       <Grid Padding="20,8,8,8" ColumnSpacing="8" BorderThickness="0,0,0,1" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <TextBlock Text="会议转写" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
+        <TextBlock x:Name="TranscriptCount" Grid.Column="1" FontSize="12" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        <Button Grid.Column="2" x:Name="CopyTranscriptButton" Tag="transcript" Click="CopyContent" Style="{StaticResource CompactIconButtonStyle}" ToolTipService.ToolTip="复制全部转写" AutomationProperties.Name="复制全部转写"><FontIcon Glyph="&#xE8C8;" FontSize="15"/></Button>
+       </Grid>
+       <ListView Grid.Row="1" x:Name="TranscriptList" ItemsSource="{Binding Entries}" SelectionMode="None" Padding="8,8,8,8" ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
+        <ListView.Resources><SolidColorBrush x:Key="ListViewItemBackgroundPointerOver" Color="Transparent"/><SolidColorBrush x:Key="ListViewItemBackgroundPressed" Color="Transparent"/></ListView.Resources>
+        <ListView.ItemTemplate><DataTemplate><Grid ColumnSpacing="12" Padding="0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="64"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+         <TextBlock Text="{Binding StartLabel}" FontSize="12" LineHeight="26" ToolTipService.ToolTip="{Binding Time}" Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+         <TextBlock Grid.Column="1" Text="{Binding Text}" FontSize="15" TextWrapping="Wrap" IsTextSelectionEnabled="True" LineHeight="26"/>
+        </Grid></DataTemplate></ListView.ItemTemplate>
+       </ListView>
+       <StackPanel x:Name="TranscriptEmpty" Grid.Row="1" Spacing="8" MaxWidth="300" Margin="24" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
+        <FontIcon Glyph="&#xE720;" FontSize="28" HorizontalAlignment="Center" Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+        <TextBlock x:Name="TranscriptEmptyTitle" Text="还没有转写内容" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center" TextAlignment="Center"/>
+        <TextBlock x:Name="TranscriptEmptyHint" Text="点击右上角「开始录制」，或从左侧导入录音。识别出的句子会逐条出现在这里。" Style="{StaticResource SettingDescriptionStyle}" TextAlignment="Center"/>
+       </StackPanel>
+       <Grid x:Name="TranscriptFooter" Grid.Row="2" Padding="20,10" ColumnSpacing="10" BorderThickness="0,1,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <Border x:Name="LiveBadge" CornerRadius="4" Padding="6,1" VerticalAlignment="Top" Margin="0,2,0,0" Background="{ThemeResource AccentFillColorDefaultBrush}">
+         <TextBlock Text="实时" FontSize="11" FontWeight="SemiBold" Foreground="{ThemeResource TextOnAccentFillColorPrimaryBrush}"/>
+        </Border>
+        <TextBlock x:Name="TranscriptFooterText" Grid.Column="1" FontSize="13" TextWrapping="Wrap" LineHeight="22" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+       </Grid>
+      </Grid>
+     </Border>
+
+     <!-- Summary card -->
+     <Border x:Name="SummaryPanel" Grid.Row="1" Grid.Column="1" Style="{StaticResource CardBorderStyle}">
+      <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+       <Grid Padding="20,8,8,8" ColumnSpacing="8" BorderThickness="0,0,0,1" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+        <TextBlock Text="AI 总结" FontSize="15" FontWeight="SemiBold" VerticalAlignment="Center"/>
+        <TextBlock x:Name="SummaryCount" Grid.Column="1" FontSize="12" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+        <Button Grid.Column="2" x:Name="SummaryButton" Click="Summarize" Style="{StaticResource SubtleButtonStyle}" Height="32" Padding="10,0" AutomationProperties.Name="立即总结" ToolTipService.ToolTip="立即总结尚未总结的新内容">
+         <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon x:Name="SummaryIcon" Glyph="&#xE945;" FontSize="15"/><TextBlock x:Name="SummaryButtonLabel" Text="立即总结" FontSize="13"/></StackPanel>
+        </Button>
+        <Button Grid.Column="3" x:Name="CopySummaryButton" Tag="summaries" Click="CopyContent" Style="{StaticResource CompactIconButtonStyle}" ToolTipService.ToolTip="复制全部总结" AutomationProperties.Name="复制全部总结"><FontIcon Glyph="&#xE8C8;" FontSize="15"/></Button>
+       </Grid>
+       <ListView Grid.Row="1" x:Name="SummaryList" ItemsSource="{Binding Summaries}" SelectionMode="None" Padding="12,8,12,8" HorizontalContentAlignment="Stretch">
+        <ListView.Resources><SolidColorBrush x:Key="ListViewItemBackgroundPointerOver" Color="Transparent"/><SolidColorBrush x:Key="ListViewItemBackgroundPressed" Color="Transparent"/></ListView.Resources>
+        <ListView.ItemTemplate><DataTemplate><StackPanel Spacing="6" Padding="0,10"><TextBlock Text="{Binding Time}" FontSize="12" Foreground="{ThemeResource TextFillColorTertiaryBrush}"/><views:MarkdownView Text="{Binding Text}"/></StackPanel></DataTemplate></ListView.ItemTemplate>
+       </ListView>
+       <StackPanel x:Name="SummaryEmpty" Grid.Row="1" Spacing="8" MaxWidth="300" Margin="24" VerticalAlignment="Center" HorizontalAlignment="Center" IsHitTestVisible="False">
+        <FontIcon Glyph="&#xE8A5;" FontSize="28" HorizontalAlignment="Center" Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+        <TextBlock Text="AI 总结会出现在这里" FontSize="15" FontWeight="SemiBold" HorizontalAlignment="Center" TextAlignment="Center"/>
+        <TextBlock x:Name="SummaryEmptyHint" Style="{StaticResource SettingDescriptionStyle}" TextAlignment="Center"/>
+       </StackPanel>
+       <Grid Grid.Row="2" Padding="20,10" ColumnSpacing="8" BorderThickness="0,1,0,0" BorderBrush="{ThemeResource DividerStrokeColorDefaultBrush}">
+        <Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <ProgressRing x:Name="SummaryProgress" Width="14" Height="14" MinWidth="14" MinHeight="14" IsActive="False" Visibility="Collapsed" VerticalAlignment="Center"/>
+        <TextBlock Grid.Column="1" Text="{Binding SummaryStatus}" FontSize="13" TextWrapping="Wrap" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+       </Grid>
+      </Grid>
+     </Border>
+
+     <!-- Meeting chat -->
+     <Border x:Name="ChatPanel" Grid.Column="2" Grid.RowSpan="2" Visibility="Collapsed">
+      <Grid RowSpacing="12"><Grid.RowDefinitions><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+       <ListView x:Name="ChatList" ItemsSource="{Binding ChatMessages}" SelectionMode="None" HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled" Padding="0,4">
+        <ListView.Resources><SolidColorBrush x:Key="ListViewItemBackgroundPointerOver" Color="Transparent"/><SolidColorBrush x:Key="ListViewItemBackgroundPressed" Color="Transparent"/></ListView.Resources>
+        <ListView.Footer>
+         <Grid MaxWidth="860" Padding="12,0,12,14"><TextBlock x:Name="ChatPreview" TextWrapping="Wrap" FontSize="15" LineHeight="26" Visibility="Collapsed" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/></Grid>
+        </ListView.Footer>
+        <ListView.ItemTemplate><DataTemplate>
+         <Grid MaxWidth="860" Padding="0,12">
+          <Border Visibility="{Binding IsUser, Converter={StaticResource BoolVisibility}}" HorizontalAlignment="Right" MaxWidth="620" CornerRadius="16,16,4,16" Padding="16,10" Background="{ThemeResource ChatBubbleBackgroundBrush}">
+           <TextBlock Text="{Binding Text}" TextWrapping="Wrap" FontSize="15" LineHeight="24" IsTextSelectionEnabled="True"/>
+          </Border>
+          <StackPanel Visibility="{Binding IsAssistant, Converter={StaticResource BoolVisibility}}" Spacing="8">
+           <StackPanel Orientation="Horizontal" Spacing="8">
+            <ContentControl Style="{StaticResource BrandMarkStyle}" AutomationProperties.AccessibilityView="Raw"/>
+            <TextBlock Text="会议助手" FontSize="12" FontWeight="SemiBold" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+            <TextBlock Text="{Binding Model}" FontSize="12" VerticalAlignment="Center" Foreground="{ThemeResource TextFillColorTertiaryBrush}"/>
+           </StackPanel>
+           <views:MarkdownView Text="{Binding Text}" Visibility="{Binding CanCopy, Converter={StaticResource BoolVisibility}}"/>
+           <StackPanel Orientation="Horizontal" Spacing="8" Visibility="{Binding IsPending, Converter={StaticResource BoolVisibility}}">
+            <ProgressRing Width="14" Height="14" MinWidth="14" MinHeight="14" IsActive="True"/>
+            <TextBlock Text="{Binding StateText}" FontSize="13" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+           </StackPanel>
+           <TextBlock Text="{Binding StateText}" FontSize="12" TextWrapping="Wrap" Visibility="{Binding CanRetry, Converter={StaticResource BoolVisibility}}" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+           <StackPanel Orientation="Horizontal" Spacing="2" Margin="-8,0,0,0">
+            <Button Tag="{Binding Text}" Click="CopyChatMessage" Visibility="{Binding CanAddToNotes, Converter={StaticResource BoolVisibility}}" Style="{StaticResource SubtleButtonStyle}" Height="30" Padding="8,0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" ToolTipService.ToolTip="复制整条回复（含 LaTeX 公式）" AutomationProperties.Name="复制整条回复"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8C8;" FontSize="13"/><TextBlock Text="复制" FontSize="12"/></StackPanel></Button>
+            <Button Tag="{Binding}" Click="AddAnswerToNotes" Visibility="{Binding CanAddToNotes, Converter={StaticResource BoolVisibility}}" Style="{StaticResource SubtleButtonStyle}" Height="30" Padding="8,0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" ToolTipService.ToolTip="加入当前会议笔记" AutomationProperties.Name="加入笔记"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE70B;" FontSize="13"/><TextBlock Text="加入笔记" FontSize="12"/></StackPanel></Button>
+            <Button Tag="{Binding RequestId}" Click="RetryChat" Visibility="{Binding CanRetry, Converter={StaticResource BoolVisibility}}" Style="{StaticResource SubtleButtonStyle}" Height="30" Padding="8,0" Foreground="{ThemeResource TextFillColorSecondaryBrush}" ToolTipService.ToolTip="重新提问" AutomationProperties.Name="重试"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE72C;" FontSize="13"/><TextBlock Text="重试" FontSize="12"/></StackPanel></Button>
+           </StackPanel>
+          </StackPanel>
+         </Grid>
+        </DataTemplate></ListView.ItemTemplate>
+       </ListView>
+       <TextBlock x:Name="ChatContextNotice" Grid.Row="1" MaxWidth="860" FontSize="12" Padding="12,0" TextWrapping="Wrap" Visibility="Collapsed" Foreground="{ThemeResource TextFillColorSecondaryBrush}"/>
+       <Border Grid.Row="2" MaxWidth="860" CornerRadius="16" BorderThickness="1" Padding="16,10,12,10" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}">
+        <Grid RowSpacing="8"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+         <TextBox x:Name="ChatInput" PlaceholderText="询问会议内容…  Ctrl + Enter 发送" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="56" MaxHeight="180" Padding="0,4" BorderThickness="0" Background="Transparent" TextChanged="ChatInputChanged" PreviewKeyDown="ChatInputKeyDown" FontSize="15" AutomationProperties.Name="询问会议内容">
+          <TextBox.Resources>
+           <SolidColorBrush x:Key="TextControlBackground" Color="Transparent"/>
+           <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent"/>
+           <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent"/>
+           <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent"/>
+           <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent"/>
+           <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent"/>
+           <Thickness x:Key="TextControlBorderThemeThickness">0</Thickness>
+           <Thickness x:Key="TextControlBorderThemeThicknessFocused">0</Thickness>
+          </TextBox.Resources>
+         </TextBox>
+         <Grid Grid.Row="1" ColumnSpacing="6"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+          <Button x:Name="ChatOptionsButton" Grid.Column="1" Click="OpenChatOptions" Style="{StaticResource SubtleButtonStyle}" Height="32" Padding="10,0" CornerRadius="16" Foreground="{ThemeResource TextFillColorSecondaryBrush}" AutomationProperties.Name="选择模型与思考强度">
+           <StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE9D9;" FontSize="14"/><TextBlock x:Name="ChatEffortLabel" Text="默认" FontSize="13" VerticalAlignment="Center" MaxWidth="260" TextTrimming="CharacterEllipsis"/><FontIcon Glyph="&#xE70D;" FontSize="10"/></StackPanel>
+          </Button>
+          <Button x:Name="ChatContextButton" Grid.Column="2" Height="32" Padding="8,0" Style="{StaticResource SubtleButtonStyle}" CornerRadius="16" Click="ChatCapacity" Foreground="{ThemeResource TextFillColorSecondaryBrush}" AutomationProperties.Name="上下文用量，点击调整上下文长度">
+           <StackPanel Orientation="Horizontal" Spacing="6">
+            <Grid Width="18" Height="18" IsHitTestVisible="False"><Ellipse Width="16" Height="16" Stroke="{StaticResource ContextRingBrush}" StrokeThickness="2" Opacity="0.25"/><ProgressRing x:Name="ChatContextRing" Width="18" Height="18" MinWidth="18" MinHeight="18" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100" Value="0"/></Grid>
+            <TextBlock x:Name="ChatContextPercent" FontSize="12" VerticalAlignment="Center"/>
+           </StackPanel>
+          </Button>
+          <Button Grid.Column="3" x:Name="ChatCancelButton" Click="CancelChat" Width="34" Height="34" Padding="0" CornerRadius="17" BorderThickness="0" Background="{ThemeResource SubtleFillColorSecondaryBrush}" ToolTipService.ToolTip="停止回答" AutomationProperties.Name="停止回答"><FontIcon Glyph="&#xE71A;" FontSize="13"/></Button>
+          <Button Grid.Column="4" x:Name="ChatSendButton" Click="SendChat" Style="{StaticResource AccentButtonStyle}" Width="34" Height="34" Padding="0" CornerRadius="17" ToolTipService.ToolTip="发送 · Ctrl + Enter" AutomationProperties.Name="发送"><FontIcon Glyph="&#xE74A;" FontSize="15"/></Button>
+         </Grid>
+        </Grid>
+       </Border>
+      </Grid>
+     </Border>
+    </Grid>
+
+     <!-- Settings: one place for devices, models, AI connections, templates, appearance and diagnostics. -->
+     <Grid x:Name="SettingsPanel" Grid.Row="3" Margin="0,16,0,0" ColumnSpacing="28" Visibility="Collapsed">
+      <Grid.ColumnDefinitions><ColumnDefinition Width="200"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+      <ListView x:Name="SettingsNav" SelectionMode="Single" SelectionChanged="SettingsCategoryChanged" VerticalAlignment="Top" AutomationProperties.Name="设置分类">
+       <ListViewItem Tag="appearance"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE790;" FontSize="16"/><TextBlock Text="外观与窗口"/></StackPanel></ListViewItem>
+       <ListViewItem Tag="audio"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE720;" FontSize="16"/><TextBlock Text="音频设备"/></StackPanel></ListViewItem>
+       <ListViewItem Tag="models"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE950;" FontSize="16"/><TextBlock Text="识别模型"/></StackPanel></ListViewItem>
+       <ListViewItem Tag="ai"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE774;" FontSize="16"/><TextBlock Text="AI 连接"/></StackPanel></ListViewItem>
+       <ListViewItem Tag="templates"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE8A5;" FontSize="16"/><TextBlock Text="提示词模板"/></StackPanel></ListViewItem>
+       <ListViewItem Tag="diagnostics"><StackPanel Orientation="Horizontal" Spacing="12"><FontIcon Glyph="&#xE9D9;" FontSize="16"/><TextBlock Text="诊断"/></StackPanel></ListViewItem>
+      </ListView>
+      <ScrollViewer Grid.Column="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled" HorizontalScrollMode="Disabled">
+       <Grid Padding="0,0,16,16">
+        <!-- A capped star column fills up to 780 and stays left-aligned; MaxWidth on a stretched element would centre it. -->
+        <Grid.ColumnDefinitions><ColumnDefinition Width="*" MaxWidth="780"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+
+        <StackPanel x:Name="SettingsAppearance" Spacing="6">
+         <TextBlock Text="外观" Style="{StaticResource SettingSectionTitleStyle}" Margin="0,0,0,6"/>
+         <Border Style="{StaticResource SettingCardStyle}">
+          <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <FontIcon Glyph="&#xE790;" FontSize="20" VerticalAlignment="Center"/>
+           <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"><TextBlock Text="主题"/><TextBlock Text="同时应用到主窗口和实时字幕窗" Style="{StaticResource SettingDescriptionStyle}"/></StackPanel>
+           <StackPanel Grid.Column="2" Orientation="Horizontal" VerticalAlignment="Center">
+            <ToggleButton x:Name="ThemeLightOption" Content="浅色" Tag="light" Click="ThemeOptionClicked" MinWidth="72" CornerRadius="4,0,0,4" AutomationProperties.Name="浅色主题"/>
+            <ToggleButton x:Name="ThemeDarkOption" Content="深色" Tag="dark" Click="ThemeOptionClicked" MinWidth="72" CornerRadius="0,4,4,0" AutomationProperties.Name="深色主题"/>
+           </StackPanel>
+          </Grid>
+         </Border>
+         <TextBlock Text="窗口" Style="{StaticResource SettingSectionTitleStyle}"/>
+         <Border Style="{StaticResource SettingCardStyle}">
+          <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <FontIcon Glyph="&#xE7F4;" FontSize="20" VerticalAlignment="Center"/>
+           <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"><TextBlock Text="关闭窗口后保留在托盘"/><TextBlock Text="录音继续运行；点击托盘图标恢复窗口，右键选择“退出”可保存并退出" Style="{StaticResource SettingDescriptionStyle}"/></StackPanel>
+           <ToggleSwitch x:Name="TrayToggle" Grid.Column="2" OnContent="开启" OffContent="关闭" MinWidth="0" Toggled="TrayToggled" VerticalAlignment="Center" AutomationProperties.Name="关闭窗口后保留在托盘"/>
+          </Grid>
+         </Border>
+        </StackPanel>
+
+        <StackPanel x:Name="SettingsAudio" Spacing="6" Visibility="Collapsed">
+         <TextBlock Text="音频设备" Style="{StaticResource SettingSectionTitleStyle}" Margin="0,0,0,6"/>
+         <Border Style="{StaticResource SettingCardStyle}">
+          <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <FontIcon Glyph="&#xE720;" FontSize="20" VerticalAlignment="Center"/>
+           <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"><TextBlock Text="麦克风"/><TextBlock Text="录制“麦克风”或“系统 + 麦克风”时使用" Style="{StaticResource SettingDescriptionStyle}"/></StackPanel>
+           <ComboBox x:Name="MicrophonePicker" Grid.Column="2" Width="280" VerticalAlignment="Center" DisplayMemberPath="Name" SelectionChanged="DeviceChanged" AutomationProperties.Name="麦克风"/>
+          </Grid>
+         </Border>
+         <Border Style="{StaticResource SettingCardStyle}">
+          <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <FontIcon Glyph="&#xE767;" FontSize="20" VerticalAlignment="Center"/>
+           <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"><TextBlock Text="系统声音"/><TextBlock Text="通过 WASAPI 回环采集电脑播放的声音" Style="{StaticResource SettingDescriptionStyle}"/></StackPanel>
+           <ComboBox x:Name="SystemPicker" Grid.Column="2" Width="280" VerticalAlignment="Center" DisplayMemberPath="Name" SelectionChanged="DeviceChanged" AutomationProperties.Name="系统声音设备"/>
+          </Grid>
+         </Border>
+         <StackPanel Orientation="Horizontal" Spacing="12" Margin="0,8,0,0">
+          <Button x:Name="RefreshDevicesButton" Click="RefreshDevices"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE72C;" FontSize="14"/><TextBlock Text="刷新设备列表"/></StackPanel></Button>
+          <TextBlock Text="新录音开始时使用这里选择的设备；未选择时跟随系统默认设备。" VerticalAlignment="Center" Style="{StaticResource SettingDescriptionStyle}"/>
+         </StackPanel>
+        </StackPanel>
+
+        <StackPanel x:Name="SettingsModels" Spacing="6" Visibility="Collapsed">
+         <TextBlock Text="识别模型" Style="{StaticResource SettingSectionTitleStyle}" Margin="0,0,0,6"/>
+         <Border Style="{StaticResource SettingCardStyle}">
+          <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <FontIcon Glyph="&#xE950;" FontSize="20" VerticalAlignment="Center"/>
+           <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"><TextBlock Text="本地识别模型"/><TextBlock Text="下载、切换识别模型，选择运行设备与下载源" Style="{StaticResource SettingDescriptionStyle}"/></StackPanel>
+           <Button Grid.Column="2" Click="ManageModels" Content="管理识别模型…" VerticalAlignment="Center"/>
+          </Grid>
+         </Border>
+        </StackPanel>
+
+        <StackPanel x:Name="SettingsAi" Spacing="6" Visibility="Collapsed">
+         <TextBlock Text="AI 连接" Style="{StaticResource SettingSectionTitleStyle}" Margin="0,0,0,6"/>
+         <Border Style="{StaticResource SettingCardStyle}">
+          <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <FontIcon Glyph="&#xE774;" FontSize="20" VerticalAlignment="Center"/>
+           <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"><TextBlock Text="API 配置"/><TextBlock x:Name="ProfileSummary" Style="{StaticResource SettingDescriptionStyle}"/></StackPanel>
+           <Button x:Name="EditProfilesButton" Grid.Column="2" Click="EditProfiles" Content="管理连接" VerticalAlignment="Center" IsEnabled="False"/>
+          </Grid>
+         </Border>
+         <TextBlock Text="在这里选择总结使用的连接。问答的连接、模型和思考强度可在输入框旁单独选择。" Margin="2,4,0,0" Style="{StaticResource SettingDescriptionStyle}"/>
+        </StackPanel>
+
+        <StackPanel x:Name="SettingsTemplates" Spacing="6" Visibility="Collapsed">
+         <TextBlock Text="提示词模板" Style="{StaticResource SettingSectionTitleStyle}" Margin="0,0,0,6"/>
+         <Border Style="{StaticResource SettingCardStyle}">
+          <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <FontIcon Glyph="&#xE8A5;" FontSize="20" VerticalAlignment="Center"/>
+           <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"><TextBlock Text="总结提示词"/><TextBlock x:Name="TemplateSummary" Style="{StaticResource SettingDescriptionStyle}"/></StackPanel>
+           <Button Grid.Column="2" Click="EditTemplates" Content="编辑模板…" VerticalAlignment="Center"/>
+          </Grid>
+         </Border>
+        </StackPanel>
+
+        <StackPanel x:Name="SettingsDiagnostics" Spacing="6" Visibility="Collapsed">
+         <TextBlock Text="诊断" Style="{StaticResource SettingSectionTitleStyle}" Margin="0,0,0,6"/>
+         <Border Style="{StaticResource SettingCardStyle}">
+          <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <FontIcon Glyph="&#xE946;" FontSize="20" VerticalAlignment="Center"/>
+           <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"><TextBlock x:Name="VersionText" Text="言川"/><TextBlock Text="本地识别 · 遇到问题时可打开诊断日志" Style="{StaticResource SettingDescriptionStyle}"/></StackPanel>
+           <Button Grid.Column="2" Click="OpenBackendLog" VerticalAlignment="Center"><StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE9D9;" FontSize="14"/><TextBlock Text="打开诊断日志"/></StackPanel></Button>
+          </Grid>
+         </Border>
+         <Border Style="{StaticResource SettingCardStyle}">
+          <Grid ColumnSpacing="16"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+           <FontIcon Glyph="&#xE703;" FontSize="20" VerticalAlignment="Center"/>
+           <StackPanel Grid.Column="1" Spacing="2" VerticalAlignment="Center"><TextBlock Text="本地后端"/><TextBlock x:Name="BackendSummary" Style="{StaticResource SettingDescriptionStyle}"/></StackPanel>
+           <Button x:Name="SettingsReconnectButton" Grid.Column="2" Click="Reconnect" Content="重新连接" VerticalAlignment="Center"/>
+          </Grid>
+         </Border>
+        </StackPanel>
+       </Grid>
+      </ScrollViewer>
+     </Grid>
+
+     <ContentControl x:Name="ProfilesPanel" Grid.Row="3" Margin="0,16,0,0" Visibility="Collapsed"
+                     HorizontalContentAlignment="Stretch" VerticalContentAlignment="Stretch" IsTabStop="False"/>
+
+     <!-- Transient confirmation, e.g. after copying. -->
+     <Border x:Name="CopyToast" Grid.Row="3" Visibility="Collapsed" IsHitTestVisible="False" HorizontalAlignment="Center" VerticalAlignment="Top" Margin="0,24,0,0" Padding="14,6" CornerRadius="16" BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" Background="{ThemeResource SolidBackgroundFillColorQuarternaryBrush}">
+      <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE73E;" FontSize="13" Foreground="{ThemeResource SystemFillColorSuccessBrush}"/><TextBlock x:Name="CopyNotice" FontSize="13"/></StackPanel>
+     </Border>
    </Grid>
   </Border>
-  <Grid x:Name="ContentArea" Grid.Column="1" Padding="28,24" RowSpacing="16">
-   <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-   <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-    <StackPanel Spacing="6"><TextBlock x:Name="WorkspaceTitle" Text="会议记录" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="{Binding Status}" Opacity="0.65" TextWrapping="Wrap"/></StackPanel>
-    <Button x:Name="ChatToggle" Grid.Column="1" Click="ToggleChat" VerticalAlignment="Center" Background="Transparent" BorderThickness="0" Width="40" Height="40" ToolTipService.ToolTip="会议问答" AutomationProperties.Name="会议问答"><FontIcon x:Name="ChatToggleIcon" Glyph="&#xE8F2;" FontSize="20"/></Button>
-    <Button x:Name="ImportButton" Grid.Column="2" Click="ImportFile" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="导入录音" AutomationProperties.Name="导入录音"><FontIcon Glyph="&#xE8B5;" FontSize="20"/></Button>
-    <Button x:Name="ScheduleButton" Grid.Column="3" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="自动总结设置" AutomationProperties.Name="自动总结设置">
-     <FontIcon Glyph="&#xE823;" FontSize="20"/>
-     <Button.Flyout><Flyout Placement="BottomEdgeAlignedRight"><StackPanel Spacing="16" Width="260">
-      <TextBlock Text="自动总结" FontSize="16" FontWeight="SemiBold"/>
-      <CheckBox x:Name="Automatic" Content="启用" Checked="ScheduleChanged" Unchecked="ScheduleChanged"/>
-      <NumberBox x:Name="Interval" Header="间隔（分钟）" Minimum="1" Maximum="120" Value="5" SpinButtonPlacementMode="Compact" ValueChanged="IntervalChanged"/>
-     </StackPanel></Flyout></Button.Flyout>
-    </Button>
-    <Button x:Name="StartButton" Grid.Column="4" Style="{StaticResource AccentButtonStyle}" Click="ToggleMeeting" Width="44" Height="40" Padding="10" CornerRadius="12" VerticalAlignment="Center" ToolTipService.ToolTip="开始会议" AutomationProperties.Name="开始会议"><FontIcon x:Name="StartIcon" Glyph="&#xE7C8;" FontSize="20"/></Button>
-   </Grid>
-   <Grid x:Name="MeetingControls" Grid.Row="1" ColumnSpacing="12"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="160"/><ColumnDefinition Width="140"/></Grid.ColumnDefinitions>
-    <Grid ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="TitleEdit" PlaceholderText="会议名称"/><Button Grid.Column="1" x:Name="RenameButton" Click="RenameMeeting" Style="{StaticResource ToolbarIconButtonStyle}" ToolTipService.ToolTip="保存会议名称" AutomationProperties.Name="保存会议名称"><SymbolIcon Symbol="Save"/></Button></Grid>
-    <ComboBox Grid.Column="1" x:Name="SourcePicker" SelectedIndex="0" SelectionChanged="SourceChanged" ToolTipService.ToolTip="会议录音时可直接切换监听音源" HorizontalAlignment="Stretch"><ComboBoxItem Content="系统 + 麦克风" Tag="both"/><ComboBoxItem Content="系统声音" Tag="system"/><ComboBoxItem Content="麦克风" Tag="microphone"/></ComboBox>
-    <ComboBox Grid.Column="2" x:Name="LanguagePicker" SelectedIndex="0" HorizontalAlignment="Stretch"><ComboBoxItem Content="自动语言" Tag="auto"/><ComboBoxItem Content="中文" Tag="zh"/><ComboBoxItem Content="日本語" Tag="ja"/><ComboBoxItem Content="English" Tag="en"/></ComboBox>
-   </Grid>
-   <InfoBar Grid.Row="2" x:Name="ErrorBar" IsOpen="False" Severity="Error" IsClosable="True"/>
-   <Grid Grid.Row="3" x:Name="Workspace" ColumnSpacing="16" SizeChanged="WorkspaceResized"><Grid.ColumnDefinitions><ColumnDefinition x:Name="TranscriptColumn" Width="*"/><ColumnDefinition x:Name="SummaryColumn" Width="*"/><ColumnDefinition x:Name="ChatColumn" Width="0"/></Grid.ColumnDefinitions>
-    <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
-    <RadioButtons x:Name="ContentTabs" Grid.ColumnSpan="2" Visibility="Collapsed" MaxColumns="2" SelectedIndex="0" SelectionChanged="ContentTabChanged" Margin="0,0,0,12"><x:String>会议转写</x:String><x:String>AI 总结</x:String></RadioButtons>
-    <Border x:Name="TranscriptPanel" Grid.Row="1" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="10" Padding="16">
-     <Grid RowSpacing="12"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-      <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="会议转写" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/><Button Grid.Column="1" x:Name="CopyTranscriptButton" Tag="transcript" Click="CopyContent" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="复制全部转写" AutomationProperties.Name="复制全部转写"><FontIcon Glyph="&#xE8C8;" FontSize="16"/></Button></Grid>
-      <ListView Grid.Row="1" x:Name="TranscriptList" ItemsSource="{Binding Entries}" SelectionMode="None" ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch">
-       <ListView.ItemTemplate><DataTemplate><StackPanel Spacing="8" Padding="0,10"><TextBlock Text="{Binding Time}" FontSize="11" Opacity="0.55"/><TextBlock Text="{Binding Text}" FontSize="16" TextWrapping="Wrap" IsTextSelectionEnabled="True" LineHeight="27"/></StackPanel></DataTemplate></ListView.ItemTemplate>
-      </ListView>
-      <Border Grid.Row="2" Background="{ThemeResource SubtleFillColorSecondaryBrush}" CornerRadius="6" Padding="12"><TextBlock Text="{Binding LiveText}" TextWrapping="Wrap" Opacity="0.7"/></Border>
-     </Grid>
-    </Border>
-    <Border x:Name="SummaryPanel" Grid.Row="1" Grid.Column="1" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" BorderThickness="1" CornerRadius="10" Padding="16">
-     <Grid RowSpacing="12"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-      <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="AI 总结" FontSize="18" FontWeight="SemiBold" VerticalAlignment="Center"/><StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6"><Button x:Name="CopySummaryButton" Tag="summaries" Click="CopyContent" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="复制全部总结" AutomationProperties.Name="复制全部总结"><FontIcon Glyph="&#xE8C8;" FontSize="16"/></Button><Button x:Name="SummaryButton" Click="Summarize" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="手动总结" AutomationProperties.Name="手动总结"><FontIcon x:Name="SummaryIcon" Glyph="&#xE945;" FontSize="18"/></Button></StackPanel></Grid>
-      <ListView Grid.Row="1" x:Name="SummaryList" ItemsSource="{Binding Summaries}" SelectionMode="None" HorizontalContentAlignment="Stretch">
-       <ListView.ItemTemplate><DataTemplate><StackPanel Spacing="8" Padding="0,10"><TextBlock Text="{Binding Time}" FontSize="11" Opacity="0.55"/><views:MarkdownView Text="{Binding Text}"/></StackPanel></DataTemplate></ListView.ItemTemplate>
-      </ListView>
-      <TextBlock Grid.Row="2" Text="{Binding SummaryStatus}" FontSize="12" Opacity="0.6" TextWrapping="Wrap"/>
-     </Grid>
-    </Border>
-    <Border x:Name="ChatPanel" Grid.Column="2" Grid.RowSpan="2" Visibility="Collapsed">
-     <Grid RowSpacing="16" MaxWidth="1080" HorizontalAlignment="Stretch"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-      <TextBlock Text="{Binding MeetingTitle}" FontSize="14" Foreground="{ThemeResource TextFillColorSecondaryBrush}" TextTrimming="CharacterEllipsis" Margin="8,8,8,0"/>
-      <ListView Grid.Row="1" x:Name="ChatList" ItemsSource="{Binding ChatMessages}" SelectionMode="None" HorizontalContentAlignment="Stretch" ScrollViewer.HorizontalScrollBarVisibility="Disabled" Padding="0,8">
-       <ListView.ItemTemplate><DataTemplate><StackPanel Spacing="10" Padding="8,12,8,20"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{Binding RoleLabel}" FontWeight="SemiBold" FontSize="13" Opacity="0.65" VerticalAlignment="Center"/><Button Grid.Column="1" Tag="{Binding Text}" Click="CopyChatMessage" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="复制内容" AutomationProperties.Name="复制内容"><FontIcon Glyph="&#xE8C8;" FontSize="14"/></Button></Grid><views:MarkdownView Text="{Binding Text}"/><Button Tag="{Binding Text}" Click="CopyChatMessage" HorizontalAlignment="Left" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="复制整条回复（含 LaTeX 公式）" AutomationProperties.Name="复制整条回复"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE8C8;" FontSize="14"/><TextBlock Text="复制"/></StackPanel></Button><Button Tag="{Binding}" Click="AddAnswerToNotes" Visibility="{Binding CanAddToNotes, Converter={StaticResource BoolVisibility}}" HorizontalAlignment="Left" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="加入当前会议笔记" AutomationProperties.Name="加入笔记"><StackPanel Orientation="Horizontal" Spacing="6"><FontIcon Glyph="&#xE70B;" FontSize="14"/><TextBlock Text="加入笔记"/></StackPanel></Button><TextBlock Text="{Binding StateText}" FontSize="12" Opacity="0.65" TextWrapping="Wrap"/><Button Tag="{Binding RequestId}" Click="RetryChat" Visibility="{Binding CanRetry, Converter={StaticResource BoolVisibility}}" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="重试" AutomationProperties.Name="重试"><FontIcon Glyph="&#xE72C;" FontSize="16"/></Button></StackPanel></DataTemplate></ListView.ItemTemplate>
-      </ListView>
-      <Border Grid.Row="2" CornerRadius="24" BorderThickness="1" BorderBrush="{ThemeResource CardStrokeColorDefaultBrush}" Background="{ThemeResource CardBackgroundFillColorDefaultBrush}" Padding="12,10,12,10">
-       <Grid RowSpacing="10"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
-        <TextBox x:Name="ChatInput" PlaceholderText="询问会议内容…" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="76" MaxHeight="180" Padding="12,8" BorderThickness="0" Background="Transparent" TextChanged="ChatInputChanged" PreviewKeyDown="ChatInputKeyDown" FontSize="16">
-         <TextBox.Resources>
-          <SolidColorBrush x:Key="TextControlBackground" Color="Transparent"/>
-          <SolidColorBrush x:Key="TextControlBackgroundPointerOver" Color="Transparent"/>
-          <SolidColorBrush x:Key="TextControlBackgroundFocused" Color="Transparent"/>
-          <SolidColorBrush x:Key="TextControlBorderBrush" Color="Transparent"/>
-          <SolidColorBrush x:Key="TextControlBorderBrushPointerOver" Color="Transparent"/>
-          <SolidColorBrush x:Key="TextControlBorderBrushFocused" Color="Transparent"/>
-          <Thickness x:Key="TextControlBorderThemeThickness">0</Thickness>
-          <Thickness x:Key="TextControlBorderThemeThicknessFocused">0</Thickness>
-         </TextBox.Resources>
-        </TextBox>
-        <Grid Grid.Row="1" ColumnSpacing="8"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-         <Button x:Name="ChatOptionsButton" Grid.Column="1" Click="OpenChatOptions" Background="Transparent" BorderThickness="0" Padding="10,6" CornerRadius="16" AutomationProperties.Name="选择模型与思考强度">
-          <StackPanel Orientation="Horizontal" Spacing="8"><FontIcon Glyph="&#xE9D9;" FontSize="17"/><TextBlock x:Name="ChatEffortLabel" Text="默认" VerticalAlignment="Center"/><FontIcon Glyph="&#xE70D;" FontSize="10"/></StackPanel>
-         </Button>
-         <Button x:Name="ChatContextButton" Grid.Column="2" Width="36" Height="36" Padding="7" Background="Transparent" BorderThickness="0" CornerRadius="18" Click="ChatCapacity" AutomationProperties.Name="上下文用量，点击调整上下文长度">
-          <Grid Width="20" Height="20" IsHitTestVisible="False"><Ellipse Width="18" Height="18" Stroke="{StaticResource ContextRingBrush}" StrokeThickness="2" Opacity="0.25"/><ProgressRing x:Name="ChatContextRing" Width="20" Height="20" MinWidth="20" MinHeight="20" IsIndeterminate="False" IsActive="True" Minimum="0" Maximum="100" Value="0"/></Grid>
-         </Button>
-         <Button Grid.Column="3" x:Name="ChatCancelButton" Click="CancelChat" Width="36" Height="36" Padding="8" Background="{ThemeResource SubtleFillColorSecondaryBrush}" BorderThickness="0" CornerRadius="18" ToolTipService.ToolTip="停止等待" AutomationProperties.Name="停止等待"><FontIcon Glyph="&#xE71A;" FontSize="14"/></Button>
-         <Button Grid.Column="4" x:Name="ChatSendButton" Click="SendChat" Width="36" Height="36" Padding="8" Background="{ThemeResource TextFillColorPrimaryBrush}" Foreground="{ThemeResource ApplicationPageBackgroundThemeBrush}" BorderThickness="0" CornerRadius="18" ToolTipService.ToolTip="发送 · Ctrl + Enter" AutomationProperties.Name="发送"><FontIcon Glyph="&#xE74A;" FontSize="18"/></Button>
-        </Grid>
-       </Grid>
-      </Border>
-     </Grid>
-    </Border>
-   </Grid>
-   <Grid Grid.Row="4" ColumnSpacing="10" Margin="0,12,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="CopyNotice" FontSize="12" Opacity="0.55" VerticalAlignment="Center"/><Button Grid.Column="1" x:Name="CopyAllButton" Tag="all" Click="CopyContent" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="复制会议全部内容" AutomationProperties.Name="复制会议全部内容"><FontIcon Glyph="&#xE8C8;" FontSize="16"/></Button><Button Grid.Column="2" x:Name="FolderButton" Click="OpenFolder" Background="Transparent" BorderThickness="0" ToolTipService.ToolTip="打开记录目录" AutomationProperties.Name="打开记录目录"><FontIcon Glyph="&#xED25;" FontSize="18"/></Button></Grid>
-  </Grid>
  </Grid>
 </Window>

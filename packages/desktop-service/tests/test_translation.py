@@ -127,3 +127,37 @@ def test_invalid_settings_do_not_replace_previous_config(tmp_path):
     assert service.caption_settings.target_language == "zh"
     assert not (tmp_path / "data/caption-settings.json").exists()
     service.close()
+
+
+@pytest.mark.parametrize("mode", ["meeting", "file"])
+def test_meeting_translation_only_runs_with_caption_view_and_drops_closed_results(tmp_path, mode):
+    entered, release = threading.Event(), threading.Event()
+
+    class Slow(Translator):
+        def translate(self, *args):
+            entered.set()
+            assert release.wait(3)
+            return "已过期的翻译"
+
+    service = DesktopService(tmp_path, translator_factory=lambda _: Slow())
+    try:
+        service.mode = mode
+        service.configure_captions(CaptionSettings(target_language="ja"))
+        ingest(service)
+        assert service.translation_units
+        assert not entered.is_set()
+        service.watch_captions(True)
+        assert entered.wait(1)
+        service.watch_captions(False)
+        release.set()
+        # A closed view invalidates in-flight results, including results arriving later.
+        time.sleep(0.05)
+        assert not service.translations
+        service.translator_factory = lambda _: Translator()
+        service.configure_captions(CaptionSettings(target_language="en"))
+        service.watch_captions(True)
+        wait(lambda: bool(service.translations))
+        assert all(result.target_language == "en" for result in service.translations.values())
+    finally:
+        release.set()
+        service.close()

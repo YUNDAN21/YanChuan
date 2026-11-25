@@ -1,3 +1,4 @@
+import json
 import threading
 
 import pytest
@@ -42,6 +43,13 @@ class ChatClient:
     def chat(self, messages):
         self.received.append(messages)
         assert self.release.wait(5)
+        if "查阅任务（JSON）：" in messages[-1]["content"]:
+            task = json.loads(messages[-1]["content"].split("查阅任务（JSON）：\n")[-1])
+            if task["phase"] == "route":
+                return '{"mode":"global"}'
+            if task["phase"] == "extract":
+                return json.dumps({"findings": [{"text": "周五交付", "citations": [0]}]})
+            return json.dumps({"text": "周五。[00:00:00]", "citations": [0]})
         return "周五。[00:00:00]"
 
 
@@ -75,7 +83,11 @@ def test_chat_rename_while_recording_and_meeting_switch(tmp_path):
     service.rename_meeting("新名")
     original = service.store.directory
     assert service.list_meetings()[0]["title"] == "新名" and service.active
-    service.send_chat("何时完成？")
+    service.store.append("confirmed", 0, 1, "周五交付")
+    usage = service.chat_usage("何时完成？")
+    request = service.send_chat("何时完成？")
+    assert request["estimated_tokens"] == usage["estimated_tokens"]
+    assert not usage["retrieval_mode"]
     service.configure_chat("default", 272000)
     assert settings[0].model == "chosen-chat-model" and "会议问答助手" in settings[0].system_prompt
     assert settings[0].reasoning_effort == "high"

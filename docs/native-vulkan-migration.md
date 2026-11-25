@@ -2,6 +2,8 @@
 
 验收报告根目录：`data/verification/native-migration-20261028/`。2026-10-28 已完成正式替换、旧源码归档和新便携包复验。机器可读总报告为 `acceptance.json`，漏字/插入/重复/混说案例为 `error-cases.json`。
 
+2026-11-15 更新：当前模型就绪与下载检查使用文件大小、GGUF 结构和 ONNX 运行时接口，不计算文件哈希；发布检查同样只记录路径和大小。以下 SHA256 字段仅记录当时验收资料，现行接口以 `desktop-api.md` 为准。
+
 ## 运行时和边界
 
 - CrispASR v0.8.45，源码 revision `e58bb48b52cf1fe957c19586297c83a2ed0d9fe4`，GGML revision `e2ae679a563014f46c546ce6c6448e8601e4dea6`。
@@ -19,7 +21,7 @@
 | 0.6B Q8_0 | `cstr/qwen3-asr-0.6b-GGUF` / `58bd3202f835f46b24b17142cb503b0860c737a5` | 1,006,809,760 | `f547589d5ca582e093b2d3312ad9ff13b609b43d413f972c0e92b823dde70a00` |
 | 1.7B Q8_0 | `cstr/qwen3-asr-1.7b-GGUF` / `674df5d44b50a63e7102a18895ed20e3f91de301` | 2,506,723,200 | `9851ab996591a2d0cb0efb216002764b509c86bd40c95e613d7b65b8e69c8a6e` |
 
-模型下载验证大小和 SHA256 后原子替换；取消保留下载分段。兼容检查覆盖 GGUF v3、`qwen3asr` 架构、张量范围、模型规模和 Q8 精度。允许在模型管理中选择已有 GGUF。旧 safetensors 缓存保持原位，不作为原生可用模型。
+模型下载验证大小和格式后原子替换；取消保留下载分段。兼容检查覆盖 GGUF v3、`qwen3asr` 架构、张量范围、模型规模和 Q8 精度。允许在模型管理中选择已有 GGUF。旧 safetensors 缓存保持原位，不作为原生可用模型。
 
 ## 三语质量
 

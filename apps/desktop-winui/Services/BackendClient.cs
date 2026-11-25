@@ -121,9 +121,9 @@ public sealed class BackendClient(string root, string? serviceRoot = null, strin
 
     private async Task DrainErrorsAsync(Process target)
     {
-        var directory = Path.Combine(serviceRoot ?? root, "data", "desktop-backend");
-        Directory.CreateDirectory(directory);
-        await using var file = new FileStream(Path.Combine(directory, "stderr.log"),
+        var path = ApplicationPaths.BackendLogPath(serviceRoot ?? root);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        await using var file = new FileStream(path,
             FileMode.Append, FileAccess.Write, FileShare.ReadWrite);
         await using var log = new StreamWriter(file, Encoding.UTF8);
         // Python's adapter never logs requests or configuration payloads.

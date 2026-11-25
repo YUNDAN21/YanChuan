@@ -19,7 +19,7 @@ public static class SubtitleProjection
             return (tail.Count > 1 ? tail[0] : "", tail.Count > 0 ? tail[^1]
                 : units.Count > 0 ? "翻译中…" : "译文将在这里显示");
         }
-        var current = ready.LastOrDefault() ?? units.LastOrDefault();
+        var current = units.LastOrDefault();
         return (current?.Text ?? "", current is null ? "字幕和译文将在这里显示"
             : Matching(current, settings, results)?.State == "ready"
                 ? Matching(current, settings, results)!.Text : "翻译中…");

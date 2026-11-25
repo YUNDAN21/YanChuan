@@ -1,47 +1,31 @@
 """Model catalogue, local inventory and cancellable downloads; no UI or ASR imports."""
 
-import hashlib
 import json
 import multiprocessing
 import queue
 import threading
 from dataclasses import asdict, dataclass, replace
-from functools import lru_cache
 from pathlib import Path
 
+from .endpoint_assets import (
+    ENDPOINT_CATALOG,
+    ModelAsset,
+    download_endpoint_asset,
+    local_endpoint_asset,
+)
 from .native_assets import NATIVE_CATALOG, download_native_asset, locate_native
 
+__all__ = [
+    "CATALOG",
+    "ModelAsset",
+    "ModelManager",
+    "ModelSettings",
+    "asset_by_id",
+    "download_asset",
+    "local_asset",
+]
 
-@dataclass(frozen=True)
-class ModelAsset:
-    id: str
-    name: str
-    kind: str
-    repository: str = ""
-    filename: str = ""
-    url: str = ""
-    sha256: str = ""
-
-
-CATALOG = (
-    *NATIVE_CATALOG,
-    ModelAsset(
-        "silero",
-        "Silero VAD · 人声检测",
-        "segmentation",
-        filename="silero_vad.onnx",
-        url="https://raw.githubusercontent.com/snakers4/silero-vad/066409f3d9db45a30d21dfcbf9147826ffdd7052/src/silero_vad/data/silero_vad.onnx",
-        sha256="1a153a22f4509e292a94e67d6f9b85e8deb25b4988682b7e174c65279d8788e3",
-    ),
-    ModelAsset(
-        "smart-turn",
-        "Smart Turn v3.2 · 语义断句",
-        "segmentation",
-        filename="smart-turn-v3.2-cpu.onnx",
-        url="https://huggingface.co/pipecat-ai/smart-turn-v3/resolve/f766f81d3cfdf7737ac64aad813d91bbfd56bf93/smart-turn-v3.2-cpu.onnx",
-        sha256="2bb026316b14a660486a75b1733cd3fbab8c2fd0314dc9af7be49f8cca967e4f",
-    ),
-)
+CATALOG = (*NATIVE_CATALOG, *ENDPOINT_CATALOG)
 
 
 def asset_by_id(identifier):
@@ -91,52 +75,14 @@ class ModelSettings:
         temporary.replace(path)
 
 
-@lru_cache(maxsize=16)
-def _hash_file(filename, size, modified):
-    with Path(filename).open("rb") as file:
-        return hashlib.file_digest(file, "sha256").hexdigest()
+def local_asset(asset, storage):
+    locator = locate_native if asset.kind == "asr" else local_endpoint_asset
+    return locator(asset, storage)
 
 
-def local_endpoint_asset(asset, storage):
-    path = Path(storage) / "endpoint" / asset.filename
-    if path.is_file():
-        stat = path.stat()
-        if _hash_file(str(path), stat.st_size, stat.st_mtime_ns) == asset.sha256:
-            return path
-    return None
-
-
-def download_endpoint_asset(asset, storage, source, progress):
-    """Verify an endpoint artifact before atomic replacement."""
-    existing = local_endpoint_asset(asset, storage)
-    if existing:
-        progress({"message": asset.name + " 已在本地，跳过下载"})
-        return existing
-    storage = Path(storage)
-    from urllib.request import urlopen
-
-    destination = storage / "endpoint" / asset.filename
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(".download")
-    digest, current = hashlib.sha256(), 0
-    try:
-        with urlopen(asset.url, timeout=30) as response, temporary.open("wb") as output:
-            total = int(response.headers.get("Content-Length", 0))
-            while chunk := response.read(256 * 1024):
-                output.write(chunk)
-                digest.update(chunk)
-                current += len(chunk)
-                progress({"message": asset.filename, "current": current, "total": total})
-        if digest.hexdigest() != asset.sha256:
-            raise ValueError("下载校验失败，请重试")
-        temporary.replace(destination)
-        return destination
-    finally:
-        temporary.unlink(missing_ok=True)
-
-
-local_asset = locate_native
-download_asset = download_native_asset
+def download_asset(asset, storage, source, progress):
+    downloader = download_native_asset if asset.kind == "asr" else download_endpoint_asset
+    return downloader(asset, storage, source, progress)
 
 
 def _download_process(
@@ -206,32 +152,33 @@ class ModelManager:
 
     def inventory(self):
         with self._lock:
-            storage = self.settings.storage(self.root)
-            assets = []
-            for asset in self.catalog:
-                location = (
-                    self.settings.model_file
-                    if self.settings.model_file and asset.id == self.settings.selected_model
-                    else storage
-                )
-                path = self.locator(asset, location)
-                assets.append(
-                    {
-                        "id": asset.id,
-                        "name": asset.name,
-                        "kind": asset.kind,
-                        "ready": path is not None,
-                        "path": str(path) if path else "",
-                    }
-                )
-            return {
-                "settings": asdict(self.settings),
-                "directory": str(storage),
-                "assets": assets,
-                "download": dict(self.state),
-                "sources": self.sources,
-                "runtime": self.runtime,
-            }
+            settings, download = self.settings, dict(self.state)
+        storage = settings.storage(self.root)
+        assets = []
+        for asset in self.catalog:
+            location = (
+                settings.model_file
+                if settings.model_file and asset.id == settings.selected_model
+                else storage
+            )
+            path = self.locator(asset, location)
+            assets.append(
+                {
+                    "id": asset.id,
+                    "name": asset.name,
+                    "kind": asset.kind,
+                    "ready": path is not None,
+                    "path": str(path) if path else "",
+                }
+            )
+        return {
+            "settings": asdict(settings),
+            "directory": str(storage),
+            "assets": assets,
+            "download": download,
+            "sources": self.sources,
+            "runtime": self.runtime,
+        }
 
     def configure(self, settings):
         with self._lock:
